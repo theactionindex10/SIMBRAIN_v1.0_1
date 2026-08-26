@@ -29,7 +29,7 @@ class Mapping(torch.nn.Module):
         :param shape: The dimensionality of the layer.
         :param memristor_info_dict: The parameters of the memristor device.
         :param CMOS_tech_info_dict: The parameters of CMOS technology.
-        :param memristor_lut: The states of memrisotr under certain voltage.
+        :param memristor_lut: The states of memristor under certain voltage.
         :param trans_ratio: Scale factor from conductance to x.
         :param learning: Whether to load with learning enabled. Default loads value from disk.
         """
@@ -47,15 +47,15 @@ class Mapping(torch.nn.Module):
         if self.device_structure == 'STDP_crossbar':
             self.shape = [1, 1]  # Shape of the memristor crossbar
             for element in shape:
-                self.shape[0] *= element
-                self.shape[1] *= element
+                self.shape[0] *= element #Row-wise update
+                self.shape[1] *= element #Column-wise update
             self.shape[0] = int(self.shape[0] ** (1/2))
             self.shape[1] = int(self.shape[1] ** (1/2))
             self.shape = tuple(self.shape)
         elif self.device_structure == 'trace':
             self.shape = [1, 1]  # Shape of the memristor crossbar
             for element in shape:
-                self.shape[1] *= element
+                self.shape[1] *= element #single row
             self.shape = tuple(self.shape)
         elif self.device_structure == 'crossbar':
             self.shape = shape
@@ -106,7 +106,7 @@ class Mapping(torch.nn.Module):
         self.mem_t = torch.zeros(batch_size, *self.shape, device=self.mem_t.device, dtype=torch.int64)
         self.mem_wr_t = torch.zeros(batch_size, *self.shape, device=self.mem_wr_t.device, dtype=torch.int)       
 
-
+'''IMPORTANT FOR BCPNN: Will need to create a new one  '''
 class STDPMapping(Mapping):
     # language=rst
     """
@@ -132,7 +132,7 @@ class STDPMapping(Mapping):
             sim_params=sim_params,
             shape=shape
         )
-
+	#Submodules
         self.mem_array = MemristorArray(sim_params=sim_params, shape=self.shape,
                                         memristor_info_dict=self.memristor_info_dict)
         self.DAC_module = DAC_Module(sim_params=sim_params, shape=self.shape,
@@ -186,8 +186,12 @@ class STDPMapping(Mapping):
             
         self.mem_array.mem_t = self.mem_t
         self.mem_array.mem_wr_t = self.mem_wr_t
+        
+        
+        
 
 
+    '''IMPORTANT: WILL NEED THIS TO CHANGE FOR BCPNN'''
     def voltage_generation(self, trace_decay, plot) -> None:
         # language=rst
         """
@@ -205,15 +209,16 @@ class STDPMapping(Mapping):
         # STDP Setup
         spike[10] = 1
 
-        # Original Trace
+        # Original Trace - waits until spike[10], jumps up, and then clamps the value to 1 if the condition is met.
         for i in range(len(spike) - 1):
             ori_trace[i + 1] = ori_trace[i] * trace_decay + spike[i]
 
             if ori_trace[i + 1] > 1:
                 ori_trace[i + 1] = 1
-
+			
         # Memristor-based Trace
         # Do not count in non-idealities
+        # Baseline model
         test_sim_params = {'device_structure': self.sim_params['device_structure'],
                            'device_name': self.sim_params['device_name'],
                            'c2c_variation': False,
@@ -361,7 +366,7 @@ class STDPMapping(Mapping):
     def mapping_read_stdp(self, s):
         # language=rst
         """
-        simulates the process of                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   
+        simulates the process of reading                  traces for both trace and STDP crossbar                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 
     
         :param s: Input spikes.
         :param mem_x_read: Internal states of memristors.
@@ -464,6 +469,244 @@ class STDPMapping(Mapping):
                          'sim_total_area':self.sim_total_area,
                          'sim_used_area_ratio':(self.sim_mem_area+periph_total_area)/self.sim_total_area}
 
+
+'''        
+class BCPNNMapping(Mapping):
+    # language=rst
+    """
+    Mapping BCPNN to memristor arrays.
+    """
+    
+    def __init__(
+        self,
+        sim_params: dict = {},
+        shape: Optional[Iterable[int]] = None,
+        **kwargs,
+    ) -> None:
+        # language=rst
+        """
+        Abstract base class constructor.
+        :param sim_params: Memristor device to be used in learning.
+        :param shape: The dimensionality of the memristor array.
+        :param vneg: Negative voltage applied to the memristor.
+        :param vpos: Positive voltage applied to the memristor.
+        :param trace_decay: The original trace drop per time step for each of the BCPNN traces
+        """
+        super().__init__(
+            sim_params=sim_params,
+            shape=shape
+        )
+
+        self.mem_array = MemristorArray(sim_params=sim_params, shape=self.shape,
+                                        memristor_info_dict=self.memristor_info_dict)
+        self.DAC_module = DAC_Module(sim_params=sim_params, shape=self.shape,
+                                        CMOS_tech_info_dict=self.CMOS_tech_info_dict, memristor_info_dict=self.memristor_info_dict)
+        self.ADC_module = ADC_Module(sim_params=sim_params, shape=self.shape,
+                                        CMOS_tech_info_dict=self.CMOS_tech_info_dict, memristor_info_dict=self.memristor_info_dict)
+        if 'clipping' in sim_params.keys():
+            self.clipping = Clipping(sim_params=sim_params, shape=self.shape, memristor_info_dict=self.memristor_info_dict)
+
+        if self.device_structure == 'STDP_crossbar':
+            self.batch_interval = sim_params['batch_interval'] * self.shape[0] * 3 + 1
+            self.write_batch_interval = sim_params['batch_interval'] + 1
+        elif self.device_structure == 'trace':
+            self.batch_interval = sim_params['batch_interval'] * 2 + 1
+            self.write_batch_interval = sim_params['batch_interval'] + 1
+
+        self.register_buffer("mem_v_read", torch.Tensor())
+        self.register_buffer("x", torch.Tensor())
+        self.register_buffer("s", torch.Tensor())
+        self.vneg = 0
+        self.vpos = 0
+        self.trace_decay = 0
+        #BCPNN parameters
+        self.kzi = 1/11
+	self.kzj = 1/11
+	self.kp = 1/500
+	self.epsilon = 0.01
+
+    def set_batch_size_stdp(self, batch_size, learning) -> None:
+        # language=rst
+        """
+        Sets mini-batch size. Called when memristor is used to mapping trace-STDP.
+    
+        :param batch_size: Mini-batch size.
+        :param learning: Whether to load with learning enabled. Default loads value from disk.
+        """
+        self.learning = learning
+        self.set_batch_size(batch_size)
+        self.mem_array.set_batch_size(batch_size=self.batch_size)
+        self.DAC_module.set_batch_size(batch_size=batch_size)
+        self.ADC_module.set_batch_size(batch_size=batch_size)
+
+        self.mem_v_read = torch.zeros(1, batch_size, 1, self.shape[0], device=self.mem_v_read.device)
+        self.x = torch.zeros(batch_size, *self.shape, device=self.x.device)
+        self.s = torch.zeros(batch_size, *self.shape, device=self.s.device)
+
+        if self.learning:
+            mem_t_matrix = (self.batch_interval * torch.arange(self.batch_size, device=self.mem_t.device))
+            self.mem_t[:, :, :] = mem_t_matrix.view(-1, 1, 1)
+            mem_wr_t_matrix = (self.write_batch_interval * torch.arange(self.batch_size, device=self.mem_t.device))
+            self.mem_wr_t[:, :, :] = mem_wr_t_matrix.view(-1, 1, 1)            
+        else:
+            self.mem_t.fill_(torch.min(self.mem_t_batch_update[:]))
+            self.mem_wr_t.fill_(torch.min(self.mem_wr_t_batch_update[:]))
+            
+        self.mem_array.mem_t = self.mem_t
+        self.mem_array.mem_wr_t = self.mem_wr_t
+        
+        
+        
+    def voltage_generation(self, trace_decay, plot) -> None:
+        # language=rst
+        """
+        Sets mini-batch size. Called when memristor is used to mapping trace-STDP.
+    
+        :param trace_decay: The original trace drop per time step.
+        :param plot: A boolean flag to determine whether to plot the results.
+        """
+        # Simulation Setup
+        points = 150
+        spike_i = torch.zeros(points)
+        spike_j = torch.zeros(points)
+        Zi_trace = torch.zeros(points)
+        Zj_trace = torch.zeros(points)
+        Pi_trace = torch.zeros(points)
+        Pj_trace = torch.zeros(points)
+        Pij_trace = torch.zeros(points)
+        mem_x = torch.zeros(points)
+        
+        
+        
+
+        # BCPNN Setup - generate from MNIST dataset
+        spike_i[10] = 1
+        spike_j[20] = 1
+
+        # Original Trace
+        for i in range(len(spike) - 1):
+            ori_trace[i + 1] = ori_trace[i] * trace_decay + spike[i]
+
+            if ori_trace[i + 1] > 1:
+                ori_trace[i + 1] = 1
+
+
+	# Original Simplified BCPNN traces
+	for i in range(len(spike) -1):
+	    Zi_trace[i + 1] = Zi_trace[i] * (1-kzi) + spike_i[i]*kzi
+	    Zj_trace[i + 1] = Zj_trace[i] * (1-kzj) + spike_j[i]*kzj
+	    Pi_trace[i+1] = (1-kp)*Pi_trace[i] + Zi_trace[i]*kp
+	    Pj_trace[i+1] = (1-kp)*Pj_trace[i] + Zj_trace[i]*kp
+	    Pij_trace[i+1] = (1-kp)*Pij_trace[i] + Zi_trace[i]*Zj_trace[i]*kp
+
+	
+  
+  
+        # Memristor-based Trace
+        # Do not count in non-idealities
+        test_sim_params = {'device_structure': self.sim_params['device_structure'],
+                           'device_name': self.sim_params['device_name'],
+                           'c2c_variation': False,
+                           'd2d_variation': 0,
+                           'stuck_at_fault': False,
+                           'retention_loss': 0,
+                           'aging_effect': 0,
+                           'wire_width': self.sim_params['wire_width'],
+                           'input_bit': self.sim_params['input_bit'],
+                           'batch_interval': self.sim_params['batch_interval'],
+                           'CMOS_technode': self.sim_params['CMOS_technode'],
+                           'ADC_precision': self.sim_params['ADC_precision'],
+                           'ADC_setting': self.sim_params['ADC_setting'],
+                           'ADC_rounding_function': self.sim_params['ADC_rounding_function'],
+                           'device_roadmap': self.sim_params['device_roadmap'],
+                           'temperature': self.sim_params['temperature'],
+                           'hardware_estimation': self.sim_params['hardware_estimation']}
+        test_array = MemristorArray(sim_params=test_sim_params, shape=(1, 1), memristor_info_dict=self.memristor_info_dict)
+        test_array.set_batch_size(batch_size=1)
+        mem_info = self.memristor_info_dict[self.device_name]
+
+        dt = mem_info['delta_t'] * mem_info['duty_ratio']
+        k_off = mem_info['k_off']
+        v_off = mem_info['v_off']
+        alpha_off = mem_info['alpha_off']
+        v_pos = v_off * (math.pow(1 / (dt * k_off), 1.0 / alpha_off) + 1)
+
+#        if self.device_structure == 'STDP_crossbar':
+#            write_time = 2
+#        elif self.device_structure == 'trace':
+#             write_time = 1
+
+        if mem_info['P_on'] == 1:
+            k_on = mem_info['k_on']
+            v_on = mem_info['v_on']
+            alpha_on = mem_info['alpha_on']
+            v_neg = v_on * (math.pow((trace_decay - 1) / (dt * k_on), 1.0 / alpha_on) + 1)
+        elif mem_info['P_off'] == 1:
+            k_off = mem_info['k_off']
+            v_off = mem_info['v_off']
+            
+            
+        #Turn into a function      
+        else:
+            # Enable batch processing for searching the best v_neg
+            v_on = mem_info['v_on']
+            n_test = 500
+            v_tensor = torch.arange(v_on, v_on - 0.01 * n_test, -0.01)
+
+            test_array.set_batch_size(batch_size=n_test)
+            test_x = torch.zeros(points, n_test, 1, 1)
+
+            for t in range(points - 1):
+                mem_s = torch.tensor(spike[t], dtype=torch.float64)
+                mem_v = v_tensor if mem_s == 0 else torch.tensor(v_pos).expand(n_test)
+
+                mem_c = test_array.memristor_write(mem_v=mem_v.unsqueeze(1).unsqueeze(2), write_time=1, mem_v_amp=[0,0])
+                test_x[t + 1] = (mem_c - self.Gon) * self.trans_ratio
+
+            # Compare results
+            golden_x = ori_trace.reshape(points, 1, 1, 1).expand(-1, n_test, -1, -1)
+            mse = torch.zeros(n_test)
+            for i in range(n_test):
+                mse[i] = F.mse_loss(test_x[:, i, :, :], golden_x[:, i, :, :])
+            min_mse, min_index = torch.min(mse, 0)
+            v_neg = float(v_tensor[min_index])
+
+        if plot:
+            blue = (47 / 255, 130 / 255, 189 / 255)
+            green = (98 / 255, 149 / 255, 61 / 255)
+
+            plt.figure(figsize=(13, 4.5))
+            grid = plt.GridSpec(14, 17, wspace=0.5, hspace=0.5)
+            ax = plt.subplot(grid[0:14, 0:17])
+
+            test_array.set_batch_size(batch_size=1)
+            for t in range(points - 1):
+                mem_s = torch.tensor(spike[t], dtype=torch.float64)
+                mem_v = mem_s.unsqueeze(0).unsqueeze(0).unsqueeze(1)
+                mem_v[mem_v == 0] = v_neg
+                mem_v[mem_v == 1] = v_pos
+
+                mem_c = test_array.memristor_write(mem_v=mem_v, write_time=write_time, mem_v_amp=[0,0])
+
+                # mem to nn
+                temp_x = (mem_c - self.Gon) * self.trans_ratio
+                mem_x[t+1] = temp_x.squeeze()
+
+            # Plot the original trace and memristor trace
+            plot_x = range(points)
+            # Original
+            ax.plot(ori_trace, color=blue, label='Original Trace')
+            ax.plot(mem_x, color=green, label='Memristor Trace')
+            ax.legend(frameon=False)
+
+            plt.tight_layout()
+            plt.savefig('voltage_generation.png', dpi=300, bbox_inches='tight')
+            plt.show()
+
+        self.vneg = v_neg
+        self.vpos = v_pos    
+        
+'''
 
 class MLPMapping(Mapping):
     # language=rst
