@@ -434,17 +434,25 @@ class Network(torch.nn.Module):
             self.average_power = 0
             self.periph_total_energy = 0
             self.periph_average_power = 0
-            for l in self.layers:
-                self.layers[l].transform.mem_array.total_energy_calculation()
-                self.layers[l].transform.DAC_module.DAC_energy_calculation(
-                    mem_t=self.layers[l].transform.mem_array.mem_t)
-                self.layers[l].transform.ADC_module.ADC_energy_calculation(
-                    mem_t=self.layers[l].transform.mem_array.mem_t)
-                self.sim_power = self.layers[l].transform.mem_array.power.sim_power
-                self.sim_DAC_module_power = self.layers[l].transform.DAC_module.DAC_module_power.sim_power
-                self.sim_ADC_module_power = self.layers[l].transform.ADC_module.ADC_module_power.sim_power
-                self.total_energy += self.sim_power['total_energy']
-                self.average_power += self.sim_power['average_power']
+            # Every BCPNN mapping (one per layer, one per P_ij-bearing connection) holds several memristor
+            # arrays that share one DAC module and one ADC module (time-multiplexed periphery).
+            mappings = [self.layers[l].transform for l in self.layers if self.layers[l].traces]
+            mappings += [self.connections[c].transform for c in self.connections
+                         if hasattr(self.connections[c], 'transform')]
+            for transform in mappings:
+                # Array energy: one Power object per array, summed over the mapping's arrays.
+                for mem_array in transform.mem_arrays.values():
+                    mem_array.total_energy_calculation()
+                    self.sim_power = mem_array.power.sim_power
+                    self.total_energy += self.sim_power['total_energy']
+                    self.average_power += self.sim_power['average_power']
+                # Periphery energy: once per mapping; mem_t only sets the elapsed time, and the
+                # arrays' clocks are clones advanced together, so any array's mem_t serves.
+                mem_t = next(iter(transform.mem_arrays.values())).mem_t
+                transform.DAC_module.DAC_energy_calculation(mem_t=mem_t)
+                transform.ADC_module.ADC_energy_calculation(mem_t=mem_t)
+                self.sim_DAC_module_power = transform.DAC_module.DAC_module_power.sim_power
+                self.sim_ADC_module_power = transform.ADC_module.ADC_module_power.sim_power
                 self.periph_total_energy += self.sim_DAC_module_power['DAC_total_energy'] + self.sim_ADC_module_power[
                     'ADC_total_energy']
                 self.periph_average_power += self.sim_DAC_module_power['DAC_average_power'] + self.sim_ADC_module_power[
