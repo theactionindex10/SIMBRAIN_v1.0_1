@@ -324,18 +324,11 @@ class STDPMapping(Mapping):
         :param s: Input spikes.
         :param x: Internal states of memristors.
         """
-        if self.device_structure == 'STDP_crossbar':
-            write_time = 2
-            if s.dim() == 4:
-                self.s = s.squeeze()
-            elif s.dim() == 2:
-                self.s = s.view(s.shape[0], self.shape[0], self.shape[1])
-        elif self.device_structure == 'trace':
-            write_time = 1
-            if s.dim() == 4:
-                self.s = s.flatten(2, 3)
-            elif s.dim() == 2:
-                self.s = torch.unsqueeze(s, 1)
+        write_time = 1
+        if s.dim() == 4:
+            self.s = s.flatten(2, 3)
+        elif s.dim() == 2:
+            self.s = torch.unsqueeze(s, 1)
         
         # nn to mem
         self.mem_v = self.s.float()
@@ -366,47 +359,28 @@ class STDPMapping(Mapping):
     def mapping_read_stdp(self, s):
         # language=rst
         """
-        simulates the process of reading                  traces for both trace and STDP crossbar                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 
-    
+   	 simulates the process of reading traces for trace (BCPNN cannot be handled by STDP crossbar
         :param s: Input spikes.
         :param mem_x_read: Internal states of memristors.
         """
-        if self.device_structure == 'STDP_crossbar':
-            if s.dim() == 4:
-                s = s.squeeze()
-            elif s.dim() == 2:
-                s = s.view(s.shape[0], int(s.shape[1] ** (1/2)), int(s.shape[1] ** (1/2)))
-            s_sum = torch.sum(s, dim=(1,2)).unsqueeze(1)
-
-            self.mem_v_read.fill_(0)
-            self.mem_v_read[0, s_sum.bool(), :] = 1
-
-            self.mem_v_read = self.DAC_module.DAC_read(mem_v=self.mem_v_read, sgn=None)
-            _, mem_i = self.mem_array.memristor_read(mem_v=self.mem_v_read, read_time=self.shape[0])
-            mem_i = mem_i.flatten(3,4)
-            ADC_mem_c = 1 / (1 / self.Goff + self.mem_array.total_wire_resistance)
-            ADC_mem_c = ADC_mem_c.flatten(0, 1).unsqueeze(0)
-            mem_i = self.ADC_module.ADC_read(mem_i_sequence=mem_i, mem_c=ADC_mem_c, high_cut_ratio=1)
-
-        elif self.device_structure == 'trace':
-            if s.dim() == 4:
-                s = s.flatten(2, 3)
-            elif s.dim() == 2:
-                s = torch.unsqueeze(s, 1)
+        if s.dim() == 4:
+            s = s.flatten(2, 3)
+        elif s.dim() == 2:
+            s = torch.unsqueeze(s, 1)
 
             # Read Voltage generation
             # For every batch, read is not necessary when there is no spike s
-            s_sum = torch.sum(s, dim=2).squeeze()
-            s_sum = torch.unsqueeze(s_sum, 1)
+        s_sum = torch.sum(s, dim=2).squeeze()
+        s_sum = torch.unsqueeze(s_sum, 1)
 
-            self.mem_v_read.zero_()
-            self.mem_v_read[0, s_sum.bool()] = 1
+        self.mem_v_read.zero_()
+        self.mem_v_read[0, s_sum.bool()] = 1
 
-            self.mem_v_read = self.DAC_module.DAC_read(mem_v=self.mem_v_read, sgn=None)
+        self.mem_v_read = self.DAC_module.DAC_read(mem_v=self.mem_v_read, sgn=None)
 
-            mem_i, _ = self.mem_array.memristor_read(mem_v=self.mem_v_read, read_time=1)
-            ADC_mem_c = 1 / (1 / self.Goff + self.mem_array.total_wire_resistance)
-            mem_i = self.ADC_module.ADC_read(mem_i_sequence=mem_i, mem_c=ADC_mem_c, high_cut_ratio=1)
+        mem_i, _ = self.mem_array.memristor_read(mem_v=self.mem_v_read, read_time=1)
+        ADC_mem_c = 1 / (1 / self.Goff + self.mem_array.total_wire_resistance)
+        mem_i = self.ADC_module.ADC_read(mem_i_sequence=mem_i, mem_c=ADC_mem_c, high_cut_ratio=1)
 
         if 'clipping' in self.sim_params.keys():
             mem_i = self.clipping.clipping_function(mem_i_origin=mem_i)
@@ -469,8 +443,7 @@ class STDPMapping(Mapping):
                          'sim_total_area':self.sim_total_area,
                          'sim_used_area_ratio':(self.sim_mem_area+periph_total_area)/self.sim_total_area}
 
-
-'''        
+       
 class BCPNNMapping(Mapping):
     # language=rst
     """
@@ -481,6 +454,7 @@ class BCPNNMapping(Mapping):
         self,
         sim_params: dict = {},
         shape: Optional[Iterable[int]] = None,
+        traces: Iterable[str] = ('Zi', 'Zj', 'Pi', 'Pj'),
         **kwargs,
     ) -> None:
         # language=rst
@@ -490,15 +464,17 @@ class BCPNNMapping(Mapping):
         :param shape: The dimensionality of the memristor array.
         :param vneg: Negative voltage applied to the memristor.
         :param vpos: Positive voltage applied to the memristor.
-        :param trace_decay: The original trace drop per time step for each of the BCPNN traces
         """
         super().__init__(
             sim_params=sim_params,
             shape=shape
         )
 
-        self.mem_array = MemristorArray(sim_params=sim_params, shape=self.shape,
-                                        memristor_info_dict=self.memristor_info_dict)
+        # One memristor array per trace, keyed by the same names as v_pair
+        self.mem_arrays = torch.nn.ModuleDict()
+        for name in traces:
+            self.mem_arrays[name] = MemristorArray(sim_params=sim_params, shape=self.shape,
+                                                   memristor_info_dict=self.memristor_info_dict)
         self.DAC_module = DAC_Module(sim_params=sim_params, shape=self.shape,
                                         CMOS_tech_info_dict=self.CMOS_tech_info_dict, memristor_info_dict=self.memristor_info_dict)
         self.ADC_module = ADC_Module(sim_params=sim_params, shape=self.shape,
@@ -518,14 +494,9 @@ class BCPNNMapping(Mapping):
         self.register_buffer("s", torch.Tensor())
         self.vneg = 0
         self.vpos = 0
-        self.trace_decay = 0
-        #BCPNN parameters
-        self.kzi = 1/11
-	self.kzj = 1/11
-	self.kp = 1/500
-	self.epsilon = 0.01
+        self.v_pair = {}  # trace name -> (v_pos, v_neg), filled by voltage_generation
 
-    def set_batch_size_stdp(self, batch_size, learning) -> None:
+    def set_batch_size_bcpnn(self, batch_size, learning) -> None:
         # language=rst
         """
         Sets mini-batch size. Called when memristor is used to mapping trace-STDP.
@@ -535,7 +506,8 @@ class BCPNNMapping(Mapping):
         """
         self.learning = learning
         self.set_batch_size(batch_size)
-        self.mem_array.set_batch_size(batch_size=self.batch_size)
+        for mem_array in self.mem_arrays.values():
+            mem_array.set_batch_size(batch_size=self.batch_size)
         self.DAC_module.set_batch_size(batch_size=batch_size)
         self.ADC_module.set_batch_size(batch_size=batch_size)
 
@@ -552,56 +524,52 @@ class BCPNNMapping(Mapping):
             self.mem_t.fill_(torch.min(self.mem_t_batch_update[:]))
             self.mem_wr_t.fill_(torch.min(self.mem_wr_t_batch_update[:]))
             
-        self.mem_array.mem_t = self.mem_t
-        self.mem_array.mem_wr_t = self.mem_wr_t
+        for mem_array in self.mem_arrays.values():
+            mem_array.mem_t = self.mem_t.clone()
+            mem_array.mem_wr_t = self.mem_wr_t.clone()
         
         
         
-    def voltage_generation(self, trace_decay, plot) -> None:
+    def voltage_generation_bcpnn(self, kzi, kzj, kp, plot, calib_rate=0.06, calib_points=1000, calib_seed=0) -> None:
         # language=rst
         """
-        Sets mini-batch size. Called when memristor is used to mapping trace-STDP.
-    
-        :param trace_decay: The original trace drop per time step.
+        Calibrates one (v_pos, v_neg) pair per trace and stores them in ``self.v_pair`` by name.
+        Called from Nodes.compute_decays, which supplies the per-step constants (Wang et al. 2021, Eq. 9).
+
+        :param kzi: Z_i update constant, kzi = dt / tau_zi.
+        :param kzj: Z_j update constant, kzj = dt / tau_zj.
+        :param kp: P update constant, kp = dt / tau_p.
         :param plot: A boolean flag to determine whether to plot the results.
+        :param calib_rate: Firing probability per step of the calibration spike trains. It should resemble the
+            rate the layer sees in operation (Poisson-encoded MNIST at intensity 64: about 0.06 for a bright pixel),
+            because the golden P that the P pairs are fitted to is built from these trains.
+        :param calib_points: Length of the calibration run in steps. Must be long against tau_p for P to develop.
+        :param calib_seed: Seed for the calibration spike trains, so calibration is reproducible.
         """
         # Simulation Setup
-        points = 150
-        spike_i = torch.zeros(points)
-        spike_j = torch.zeros(points)
+        points = calib_points
         Zi_trace = torch.zeros(points)
         Zj_trace = torch.zeros(points)
         Pi_trace = torch.zeros(points)
         Pj_trace = torch.zeros(points)
-        Pij_trace = torch.zeros(points)
         mem_x = torch.zeros(points)
-        
-        
-        
 
-        # BCPNN Setup - generate from MNIST dataset
-        spike_i[10] = 1
-        spike_j[20] = 1
-
-        # Original Trace
-        for i in range(len(spike) - 1):
-            ori_trace[i + 1] = ori_trace[i] * trace_decay + spike[i]
-
-            if ori_trace[i + 1] > 1:
-                ori_trace[i + 1] = 1
+        # BCPNN Setup - calibration spike trains. Random firing with probability calib_rate per step 
+        calib_generator = torch.Generator().manual_seed(calib_seed)
+        spike_i = (torch.rand(points, generator=calib_generator) < calib_rate).float()
+        spike_j = (torch.rand(points, generator=calib_generator) < calib_rate).float()
 
 
-	# Original Simplified BCPNN traces
-	for i in range(len(spike) -1):
-	    Zi_trace[i + 1] = Zi_trace[i] * (1-kzi) + spike_i[i]*kzi
-	    Zj_trace[i + 1] = Zj_trace[i] * (1-kzj) + spike_j[i]*kzj
-	    Pi_trace[i+1] = (1-kp)*Pi_trace[i] + Zi_trace[i]*kp
-	    Pj_trace[i+1] = (1-kp)*Pj_trace[i] + Zj_trace[i]*kp
-	    Pij_trace[i+1] = (1-kp)*Pij_trace[i] + Zi_trace[i]*Zj_trace[i]*kp
 
-	
-  
-  
+        # Original Simplified BCPNN traces
+        Pij_trace = torch.zeros(points)  # joint trace, driven by the digital product Zi*Zj (Wang 2021 eq. 10)
+        for i in range(len(spike_i) -1):
+            Pi_trace[i+1] = (1-kp)*Pi_trace[i] + Zi_trace[i]*kp
+            Pj_trace[i+1] = (1-kp)*Pj_trace[i] + Zj_trace[i]*kp
+            Pij_trace[i+1] = (1-kp)*Pij_trace[i] + Zi_trace[i]*Zj_trace[i]*kp
+            Zi_trace[i + 1] = Zi_trace[i] * (1-kzi) + spike_i[i]*kzi
+            Zj_trace[i + 1] = Zj_trace[i] * (1-kzj) + spike_j[i]*kzj
+     
         # Memristor-based Trace
         # Do not count in non-idealities
         test_sim_params = {'device_structure': self.sim_params['device_structure'],
@@ -623,32 +591,47 @@ class BCPNNMapping(Mapping):
                            'hardware_estimation': self.sim_params['hardware_estimation']}
         test_array = MemristorArray(sim_params=test_sim_params, shape=(1, 1), memristor_info_dict=self.memristor_info_dict)
         test_array.set_batch_size(batch_size=1)
+        
+        
+        self.v_pair = {}
+        self.v_pair['Zi'] = self._calibrate_one(kzi, spike_i, Zi_trace, test_array, plot, name='Zi')
+        self.v_pair['Zj'] = self._calibrate_one(kzj, spike_j, Zj_trace, test_array, plot, name='Zj')
+        self.v_pair['Pi'] = self._calibrate_driven(Zi_trace, Pi_trace, test_array, plot, name='Pi')
+        self.v_pair['Pj'] = self._calibrate_driven(Zj_trace, Pj_trace, test_array, plot, name='Pj')
+        self.v_pair['Pij'] = self._calibrate_driven(Zi_trace * Zj_trace, Pij_trace, test_array, plot, name='Pij')
+
+
+    def _calibrate_one(self, kz, spike, trace, test_array, plot=False, name=''):
+
         mem_info = self.memristor_info_dict[self.device_name]
+        points = len(spike)
 
         dt = mem_info['delta_t'] * mem_info['duty_ratio']
         k_off = mem_info['k_off']
         v_off = mem_info['v_off']
         alpha_off = mem_info['alpha_off']
-        v_pos = v_off * (math.pow(1 / (dt * k_off), 1.0 / alpha_off) + 1)
+        # spike: Z -> Z + kz*(1-Z); VTEAM with P_off == 1 moves x by dt*k_off*(v/v_off-1)^alpha*(1-x), so match kz
+        v_pos = v_off * (math.pow(kz / (dt * k_off), 1.0 / alpha_off) + 1)
 
 #        if self.device_structure == 'STDP_crossbar':
 #            write_time = 2
-#        elif self.device_structure == 'trace':
-#             write_time = 1
+#        elif self.device_structure == 'trace': 
+        write_time = 1
 
         if mem_info['P_on'] == 1:
             k_on = mem_info['k_on']
             v_on = mem_info['v_on']
             alpha_on = mem_info['alpha_on']
-            v_neg = v_on * (math.pow((trace_decay - 1) / (dt * k_on), 1.0 / alpha_on) + 1)
+            # silence: Z -> Z*(1-kz); VTEAM with P_on == 1 gives x*(1 + dt*k_on*(v/v_on-1)^alpha), so the bracket = -kz
+            v_neg = v_on * (math.pow(-kz / (dt * k_on), 1.0 / alpha_on) + 1)
         elif mem_info['P_off'] == 1:
             k_off = mem_info['k_off']
             v_off = mem_info['v_off']
-            
-            
-        #Turn into a function      
+        
+        
+    #Turn into a function      
         else:
-            # Enable batch processing for searching the best v_neg
+        # Enable batch processing for searching the best v_neg
             v_on = mem_info['v_on']
             n_test = 500
             v_tensor = torch.arange(v_on, v_on - 0.01 * n_test, -0.01)
@@ -660,11 +643,11 @@ class BCPNNMapping(Mapping):
                 mem_s = torch.tensor(spike[t], dtype=torch.float64)
                 mem_v = v_tensor if mem_s == 0 else torch.tensor(v_pos).expand(n_test)
 
-                mem_c = test_array.memristor_write(mem_v=mem_v.unsqueeze(1).unsqueeze(2), write_time=1, mem_v_amp=[0,0])
+                mem_c = test_array.memristor_write(mem_v=mem_v.unsqueeze(1).unsqueeze(2), write_time=write_time, mem_v_amp=[0,0])
                 test_x[t + 1] = (mem_c - self.Gon) * self.trans_ratio
 
-            # Compare results
-            golden_x = ori_trace.reshape(points, 1, 1, 1).expand(-1, n_test, -1, -1)
+        # Compare results
+            golden_x = trace.reshape(points, 1, 1, 1).expand(-1, n_test, -1, -1)
             mse = torch.zeros(n_test)
             for i in range(n_test):
                 mse[i] = F.mse_loss(test_x[:, i, :, :], golden_x[:, i, :, :])
@@ -688,25 +671,225 @@ class BCPNNMapping(Mapping):
 
                 mem_c = test_array.memristor_write(mem_v=mem_v, write_time=write_time, mem_v_amp=[0,0])
 
+            # mem to nn
+                temp_x = (mem_c - self.Gon) * self.trans_ratio
+                mem_x[t+1] = temp_x.squeeze()
+
+        # Plot the original trace and memristor trace
+            plot_x = range(points)
+        # Original
+            ax.plot(trace, color=blue, label='Original Trace')
+            ax.plot(mem_x, color=green, label='Memristor Trace')
+            ax.legend(frameon=False)
+
+            plt.tight_layout()
+            plt.savefig(f'voltage_generation_{name}.png', dpi=300, bbox_inches='tight')
+            plt.show()
+            
+        return v_pos, v_neg
+
+    def _calibrate_driven(self, drive, trace, test_array, plot=False, name=''):
+        # language=rst
+
+        points = len(trace)
+        mem_info = self.memristor_info_dict[self.device_name]
+        write_time = 1
+
+        v_off = mem_info['v_off']
+        v_on = mem_info['v_on']
+        n_pos = 100
+        n_neg = 100
+        v_pos_tensor = v_off * (1 + torch.linspace(0, 1.5, n_pos))
+        v_neg_tensor = v_on * (1 + torch.linspace(0, 1.5, n_neg))
+
+        # Enable batch processing for searching the best (v_pos, v_neg) pair: one memristor per combination.
+        
+        n_test = n_pos * n_neg
+        v_pos_grid = v_pos_tensor.repeat_interleave(n_neg)
+        v_neg_grid = v_neg_tensor.repeat(n_pos)
+
+        test_array.set_batch_size(batch_size=n_test)
+        test_x = torch.zeros(points, n_test, 1, 1)
+
+        for t in range(points - 1):
+            
+            mem_d = torch.tensor(drive[t], dtype=torch.float64)
+            mem_up = mem_d > test_x[t, :, 0, 0]
+            mem_v = torch.zeros(n_test)
+            mem_v[mem_up] = v_pos_grid[mem_up]
+            mem_v[~mem_up] = v_neg_grid[~mem_up]
+
+            mem_c = test_array.memristor_write(mem_v=mem_v.unsqueeze(1).unsqueeze(2), write_time=write_time, mem_v_amp=[0,0])
+            test_x[t + 1] = (mem_c - self.Gon) * self.trans_ratio
+
+        # Compare results
+        golden_x = trace.reshape(points, 1, 1, 1).expand(-1, n_test, -1, -1)
+        mse = torch.zeros(n_test)
+        for i in range(n_test):
+            mse[i] = F.mse_loss(test_x[:, i, :, :], golden_x[:, i, :, :])
+        min_mse, min_index = torch.min(mse, 0)
+        v_pos = float(v_pos_grid[min_index])
+        v_neg = float(v_neg_grid[min_index])
+
+        if plot:
+            blue = (47 / 255, 130 / 255, 189 / 255)
+            green = (98 / 255, 149 / 255, 61 / 255)
+            mem_x = torch.zeros(points)
+
+            plt.figure(figsize=(13, 4.5))
+            grid = plt.GridSpec(14, 17, wspace=0.5, hspace=0.5)
+            ax = plt.subplot(grid[0:14, 0:17])
+
+            test_array.set_batch_size(batch_size=1)
+            for t in range(points - 1):
+                mem_d = torch.tensor(drive[t], dtype=torch.float64)
+                mem_v = torch.zeros(1, 1, 1)
+                mem_v[:] = v_pos if mem_d > mem_x[t] else v_neg
+
+                mem_c = test_array.memristor_write(mem_v=mem_v, write_time=write_time, mem_v_amp=[0,0])
+
                 # mem to nn
                 temp_x = (mem_c - self.Gon) * self.trans_ratio
                 mem_x[t+1] = temp_x.squeeze()
 
             # Plot the original trace and memristor trace
-            plot_x = range(points)
-            # Original
-            ax.plot(ori_trace, color=blue, label='Original Trace')
-            ax.plot(mem_x, color=green, label='Memristor Trace')
+            ax.plot(trace, color=blue, label='Original ' + name)
+            ax.plot(mem_x, color=green, label='Memristor ' + name)
             ax.legend(frameon=False)
 
             plt.tight_layout()
-            plt.savefig('voltage_generation.png', dpi=300, bbox_inches='tight')
+            plt.savefig(f'voltage_generation_{name}.png', dpi=300, bbox_inches='tight')
             plt.show()
 
-        self.vneg = v_neg
-        self.vpos = v_pos    
+        return v_pos, v_neg
         
-'''
+    def mapping_write_bcpnn(self, drive, x_current, trace):
+        # language=rst
+        """
+        simulates the process of mapping BCPNN to the memristor array for trace structure.
+    
+        :param drive: Input spikes.
+        :param x_current: Internal states of memristors.
+        :param trace: Current trace being written 
+        """
+        vpos, vneg = self.v_pair[trace]
+        write_time = 1
+        if drive.dim() == 4:
+            self.s = drive.flatten(2, 3)
+            x_cur = x_current.flatten(2,3)
+        elif drive.dim() == 2:
+            self.s = torch.unsqueeze(drive, 1)
+            x_cur = torch.unsqueeze(x_current,1)
+        elif drive.dim() == 3:
+            self.s = drive.flatten(1, 2).unsqueeze(1)          # (B, H, M) -> (B, 1, H*M) single memristor row
+            x_cur = x_current.flatten(1, 2).unsqueeze(1)	
+        
+        # nn to mem
+        mem_up = self.s > x_cur
+        self.mem_v = torch.zeros_like(x_cur)
+        self.mem_v[mem_up] = vpos
+        self.mem_v[~mem_up] = vneg    
+
+        self.DAC_module.DAC_write(mem_v=self.mem_v, mem_v_amp=[vpos, vneg])
+
+        mem_c = self.mem_arrays[trace].memristor_write(mem_v=self.mem_v, write_time=write_time, mem_v_amp=[vpos, vneg])
+        
+        # mem to nn
+        self.x = (mem_c - self.Gon) * self.trans_ratio
+
+        
+        if drive.dim() == 4:
+            self.x = self.x.reshape(drive.size(0), drive.size(1), drive.size(2), drive.size(3))
+        elif drive.dim() == 2:
+            self.x = self.x.squeeze()
+        elif drive.dim() == 3:
+            self.x = self.x.reshape(drive.size(0), drive.size(1), drive.size(2))
+
+        return self.x
+        
+    def mapping_read_bcpnn(self, trace):
+        # language=rst
+        """
+   	 simulates the process of reading traces for trace (BCPNN cannot be handled by STDP crossbar)
+        :param s: Input spikes.
+        :param mem_x_read: Internal states of memristors.
+        """
+        self.mem_v_read.fill_(1)
+
+        # Read Voltage generation
+     
+
+        self.mem_v_read = self.DAC_module.DAC_read(mem_v=self.mem_v_read, sgn=None)
+
+        mem_i, _ = self.mem_arrays[trace].memristor_read(mem_v=self.mem_v_read, read_time=1)
+        ADC_mem_c = 1 / (1 / self.Goff + self.mem_arrays[trace].total_wire_resistance)
+        mem_i = self.ADC_module.ADC_read(mem_i_sequence=mem_i, mem_c=ADC_mem_c, high_cut_ratio=1)
+
+        if 'clipping' in self.sim_params.keys():
+            mem_i = self.clipping.clipping_function(mem_i_origin=mem_i)
+
+        # current to trace
+        self.mem_x_read = (mem_i/self.v_read - self.Gon) * self.trans_ratio
+        
+
+        return self.mem_x_read               
+        
+  
+    def reset_memristor_variables(self) -> None:
+        # language=rst
+        """
+        Abstract base class method for resetting state variables per trace.
+        """
+        v_reset = self.memristor_luts[self.device_name]['V_reset']
+        self.mem_v.fill_(v_reset)
+        # Adopt large negative pulses to reset the memristor array
+        self.DAC_module.DAC_reset(mem_v=self.mem_v)
+        for mem_array in self.mem_arrays.values():
+            mem_array.memristor_reset(mem_v=self.mem_v)
+
+    def mem_t_update(self) -> None:
+        # language=rst
+        """
+        Updates the timing parameters for the memristor arrays per trace.
+        """
+        for mem_array in self.mem_arrays.values():
+            mem_array.mem_t += self.batch_interval * (self.batch_size - 1)
+            mem_array.mem_wr_t += self.write_batch_interval * (self.batch_size - 1)
+
+    def update_SAF_mask(self) -> None:
+        # language=rst
+        """
+        Updates the Stuck-At Fault (SAF) mask for the memristor array.
+        """
+        for mem_array in self.mem_arrays.values():
+            mem_array.update_SAF_mask()
+
+    def total_area_calculation(self) -> None:
+        # language=rst
+        """
+        Calculate total area for memristor-based architecture. Called when power is reported.
+        """
+        self.sim_mem_area = sum(a.area.array_area for a in self.mem_arrays.values())
+        n_arrays = len(self.mem_arrays)
+        any_array = next(iter(self.mem_arrays.values()))
+
+        DAC_height_row, DAC_width_row, DAC_height_col, DAC_width_col, sim_switch_matrix_row_area, sim_switch_matrix_col_area = self.DAC_module.DAC_module_area.DAC_module_cal_area()
+        ADC_height, ADC_width, sim_shiftadd_area, sim_SarADC_area = self.ADC_module.ADC_module_area.ADC_module_cal_area()
+        periph_total_area = sim_switch_matrix_row_area + sim_switch_matrix_col_area + sim_shiftadd_area + sim_SarADC_area
+        self.sim_periph_area = {'sim_switch_matrix_row_area': sim_switch_matrix_row_area,
+                             'sim_switch_matrix_col_area': sim_switch_matrix_col_area,
+                             'sim_shiftadd_area': sim_shiftadd_area, 'sim_SarADC_area': sim_SarADC_area,
+                             'sim_total_periph_area': periph_total_area}
+
+        total_height = max(any_array.length_col + ADC_height + DAC_height_col, DAC_height_row)
+        total_width = DAC_width_row + max(n_arrays * any_array.length_row, DAC_width_col, ADC_width)
+        self.sim_total_area = total_height * total_width
+
+        self.sim_area = {'sim_mem_area':self.sim_mem_area,
+                         'sim_periph_area':periph_total_area,
+                         'sim_total_area':self.sim_total_area,
+                         'sim_used_area_ratio':(self.sim_mem_area+periph_total_area)/self.sim_total_area}
+
 
 class MLPMapping(Mapping):
     # language=rst
