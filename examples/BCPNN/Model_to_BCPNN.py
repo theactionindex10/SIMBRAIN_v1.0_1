@@ -1,49 +1,21 @@
-import os
-import sys
 import torch
 import argparse
+from dataclasses import dataclass
 import numpy as np
-import math
-import BcpnnSim as sim 
+import BcpnnSim as sim  
+from plot import plot_receptive_fields, plot_filters
+from preprocess import MNISTDataset
+from simbrain.mapping import BCPNNMapping
 
-from torchvision import transforms
-from torch.utils.data import DataLoader, random_split
-from tqdm import tqdm
-
-from time import time as t
-
-sys.path.append('../../')
-
-from bindsnet.datasets import MNIST
-from bindsnet.encoding import PoissonEncoder
-from bindsnet.models import IncreasingInhibitionNetwork
-from bindsnet.network.monitors import Monitor
-from bindsnet.evaluation import all_activity, assign_labels
-
-
-# %% Argument
-parser = argparse.ArgumentParser()
 # network configuration
+parser = argparse.ArgumentParser(description="Run MNIST with a Python-built BCPNNSim network")
 parser.add_argument("--multiple_test_no", type=int, default=100) # Number of tests to run
-parser.add_argument("--seed", type=int, default=88192386) # Random seed
-parser.add_argument("--n_neurons", type=int, default=625) # Number of neurons in the network
-parser.add_argument("--train_batch_size", type=int, default=50)
-parser.add_argument("--val_batch_size", type=int, default=128)
-parser.add_argument("--test_batch_size", type=int, default=128)
 parser.add_argument("--n_epochs", type=int, default=10) # Number of training epochs
 parser.add_argument("--n_test", type=int, default=1000) # Number of test samples
 parser.add_argument("--n_train", type=int, default=1000) # Number of training samples
-parser.add_argument("--n_workers", type=int, default=-1) # Number of data loader workers
-parser.add_argument("--theta_plus", type=float, default=0.05) # On-spike increment of ``DiehlAndCookNodes`` membrane threshold potential
-parser.add_argument("--time", type=int, default=250) # Simulation time for each input sample
-parser.add_argument("--dt", type=int, default=1.0) # Time step
-parser.add_argument("--intensity", type=float, default=64) # Input intensity scaling factor
-parser.add_argument("--progress_interval", type=int, default=1) # Interval for printing progress
-parser.add_argument("--update_interval", type=int, default=250) # Interval for updating neuron states
-parser.add_argument("--update_inhibation_weights", type=int, default=500) # Interval for updating inhibition weights
-parser.add_argument("--plot_interval", type=int, default=250) # Interval for plotting
-parser.add_argument("--plot", dest="plot", action="store_true")
-parser.add_argument("--gpu", dest="gpu", action="store_true", default='gpu')
+parser.add_argument("--epochs_usup", type=int, default=5)
+parser.add_argument("--epochs_sup", type=int, default=5)
+parser.add_argument("--time", type=int, default=3)
 # memristor device configuration
 parser.add_argument("--memristor_device", type=str, default='ideal') # trace: do not use memristors; ideal, ferro, MF, CMS, or mine
 parser.add_argument("--c2c_variation", type=bool, default=False)
@@ -62,31 +34,17 @@ parser.add_argument("--CMOS_technode", type=int, default=45) # 7, 10, 14, 22, 32
 parser.add_argument("--device_roadmap", type=str, default='HP') # HP: High Performance or LP: Low Power
 parser.add_argument("--temperature", type=int, default=300) # Temperature will only affect the peripheral circuits, not the memristor itself
 parser.add_argument("--hardware_estimation", type=int, default=False)
+parser.add_argument("--memristor_inference", type=int, default=0)
 
 parser.set_defaults(plot=False, gpu=True)
 
 args = parser.parse_args()
-
-seed = args.seed
-n_neurons = args.n_neurons
-train_batch_size = args.train_batch_size
-val_batch_size = args.val_batch_size
-test_batch_size = args.test_batch_size
-n_epochs = args.n_epochs
-n_test = math.ceil(args.n_test / test_batch_size)
-n_train = math.ceil(args.n_train / train_batch_size)
-n_workers = args.n_workers
-theta_plus = args.theta_plus
-time = args.time
-dt = args.dt
-intensity = args.intensity
-multiple_test_no = args.multiple_test_no
-progress_interval = args.progress_interval
-plot_interval = args.plot_interval
-update_interval = args.update_interval
+n_epochs_usup = args.epochs_usup
+n_epochs_sup = args.epochs_sup
+n_test = args.n_test
+n_train = args.n_train
 plot = args.plot
 gpu = args.gpu
-update_inhibation_weights = args.update_inhibation_weights
 sim_params = {'device_structure': args.memristor_structure, 'device_name': args.memristor_device,
               'c2c_variation': args.c2c_variation, 'd2d_variation': args.d2d_variation,
               'stuck_at_fault': args.stuck_at_fault, 'retention_loss': args.retention_loss,
@@ -94,332 +52,332 @@ sim_params = {'device_structure': args.memristor_structure, 'device_name': args.
               'batch_interval': args.time, 'CMOS_technode': args.CMOS_technode, 'ADC_precision': args.ADC_precision,
               'ADC_setting': args.ADC_setting, 'ADC_rounding_function': args.ADC_rounding_function,
               'device_roadmap': args.device_roadmap, 'temperature': args.temperature,
-              'hardware_estimation': args.hardware_estimation}
+              'hardware_estimation': args.hardware_estimation, 'memristor_inference': args.memristor_inference}
+@dataclass
+class Params:
+    # Reproducibility
+    seed: int = 88192386
 
-# %% Sets up Gpu use
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-# torch.manual_seed(seed)
-if gpu and torch.cuda.is_available():
-    torch.cuda.manual_seed_all(seed)
-else:
-    torch.manual_seed(seed)
-    device = "cpu"
-    if gpu:
-        gpu = False
+    # Dataset sizes
+    trnpat: int = 1000
+    tenpat: int = 1000
 
-torch.set_num_threads(os.cpu_count() - 1)
-print("Running on Device = ", device)
+    # Network architecture: 784x2 -> 30x100 -> 1x10
+    Hin: int = 784
+    Min: int = 2
+    Hhid: int = 30
+    Mhid: int = 100
+    Hut: int = 1
+    Mut: int = 10
 
-# Determines number of workers to use
-if n_workers == -1:
-    n_workers = torch.cuda.is_available() * 4 * torch.cuda.device_count()
+    # Learning schedule
+    nepoch_usup: int = 5
+    nepoch_sup: int = 5
+    nloop: int = 3
 
-n_sqrt = int(np.ceil(np.sqrt(n_neurons)))
-start_intensity = intensity
+    # BCPNN learning parameters
+    eps: float = 1e-8
+    taup: float = 1.0
 
-# %% Multiple test
-out_root = 'Accuracy_Results_earlystop.txt'
+    # Population dynamics
+    actfn: str = "SOFTMAX"
+    maxfq: float = 1000.0
+    nampl: float = 0.01
+    nfreq: float = 100.0
 
-# %% Load MNIST training data.
-dataset = MNIST(
-    PoissonEncoder(time=time, dt=dt),
-    None,
-    root=os.path.join("..", "..", "data", "MNIST"),
-    download=True,
-    transform=transforms.Compose(
-        [transforms.ToTensor(), transforms.Lambda(lambda x: x * intensity)]
-    ),
-)
+    # Structural plasticity on input -> hidden projection
+    updconnint: int = 1000
+    nactHi: int = 81
+    nsilHi: int = 703
+    nswap: float = 100.0
+    nrepl: float = -1.0
+    swaprthr: float = 1.1
+    knrepl: float = 2.0
 
-# Define the size of the training and validation sets
-train_size = int(len(dataset) * 5 / 6)
-val_size = len(dataset) - train_size
+    
+def encode_mnist(img):
+    """
+    Encode one MNIST image as 784 hypercolumns x 2 minicolumns.
 
-# Separate train dataset and validation dataset
-train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
+    For each pixel value p:
+        p -> [1 - p, p]
 
-# Create DataLoaders
-train_dataloader = DataLoader(
-    train_dataset,
-    batch_size=train_batch_size,
-    shuffle=True,
-    num_workers=n_workers,
-    pin_memory=gpu
-)
+    Output shape:
+        784 * 2 = 1568
+    """
+    x = np.asarray(img, dtype=np.float32).reshape(-1) #Reshape image into 1-D array
+    x = np.clip(x, 0.0, 1.0) # Clipping the image pixels to binary 1 or 0 values.
 
-val_dataloader = DataLoader(
-    val_dataset,
-    batch_size=val_batch_size,
-    shuffle=False,
-    num_workers=n_workers,
-    pin_memory=gpu
-)
+    pat = np.empty((784, 2), dtype=np.float32)  #Creates a 784 HC x 2 MC empty array of float type
+    pat[:, 0] = 1.0 - x #selecting first column and assigning  probability value 1-p
+    pat[:, 1] = x #selecting second column and assigning probability value p
 
-for test_cnt in range(multiple_test_no):
-    out = open(out_root, 'a')
+    return pat.reshape(-1)
 
-    # %% Enable test while training
 
-    init_num = 110000 # start capacity, change with the network shape (number of training patterns)
-    signal_break = 0
-    tmp_acc = 0
-    best_acc = 0
-    best_capacity = 0
-    total_capacity = 0
-    current_capacity = 0
-    patience = 500
-    regular_step = 100
-    slow_step = 20
-    critical_acc = 90
-    init_batch_sign = True
+def iter_encoded_mnist(mnist, split, n):
+    """Yield encoded MNIST patterns and labels."""
+    for idx in range(n):
+        img = mnist.get_image(idx, split=split)
+        pat = encode_mnist(img)
+        lbl = mnist.get_label(idx, split=split)
+        yield pat, lbl
 
-    # %% Build network.
-    network = IncreasingInhibitionNetwork(
-        n_input=784,
-        n_neurons=n_neurons,
-        start_inhib=10,
-        max_inhib=-40,
-        theta_plus=0.05,
-        tc_theta_decay=1e7,
-        inpt_shape=(1, 28, 28),
-        nu=(1e-4, 1e-2),
-        sim_params=sim_params,
-        batch_size=train_batch_size
-    )
 
-    network.to(device)
+# --------------------------------------------------
+# BCPNN model
+# --------------------------------------------------
 
-    # Record spikes during the simulation.
-    spike_record = torch.zeros((update_interval, int(time / dt), n_neurons), device=device)
+class BCPNNMNISTModel:
+    def __init__(self, param):
+        self.param = param
+        self.updconn_counter = 0
+        self.rec = {'zi' : [], 'axoact' : [], 'hihjhi' : [],  'zj' : [], 'pi' : [], 'pj' : [], 'pji' : []}
+        self.pji_index = None
+        sim.clear_all()
+        sim.gsetseed(param.seed)
 
-    # Neuron assignments and spike proportions.
-    n_classes = 10
-    assignments = -torch.ones(n_neurons, device=device)
-    proportions = torch.zeros((n_neurons, n_classes), device=device)
-    rates = torch.zeros((n_neurons, n_classes), device=device)
+        self._build_network()
 
-    # Sequence of accuracy estimates.
-    accuracy = {"all": [], "proportion": []}
+    def _build_network(self):
+        self.net = sim.Netw("mnist_net")
+        self._build_populations()
+        self._build_projections()
 
-    # Voltage recording for excitatory and inhibitory layers.
-    som_voltage_monitor = Monitor(
-        network.layers["Y"], ["v"], time=int(time / dt), device=device
-    )
-    network.add_monitor(som_voltage_monitor, name="som_voltage")
+    def _build_populations(self):
+        p = self.param
 
-    # Set up monitors for spikes and voltages
-    spikes = {}
-    for layer in set(network.layers):
-        spikes[layer] = Monitor(
-            network.layers[layer], state_vars=["s"], time=int(time / dt), device=device
+        self.inpop = self.net.add_pop(p.Hin, p.Min, "inpop")
+        self.inpop.setactfn(p.actfn)
+        self.inpop.setmaxfq(p.maxfq)
+
+        self.hidpop = self.net.add_pop(p.Hhid, p.Mhid, "hidpop")
+        self.hidpop.setactfn(p.actfn)
+        self.hidpop.setnfreq(p.nfreq)
+        self.hidpop.setnampl(p.nampl)
+
+        self.outpop = self.net.add_pop(p.Hut, p.Mut, "outpop")
+        self.outpop.setactfn(p.actfn)
+
+    def _build_projections(self):
+        p = self.param
+        
+        if(args.memristor_inference == 1):
+            self.m = BCPNNMapping(sim_params, shape = {'Pi': 47040, 'Pj': 3000, 'Pji': 4704000} )
+            self.m.voltage_generation_bcpnn('notes/ihprj_golden_traces.npz')
+            self.m.set_batch_size_bcpnn(1,True)
+
+        self.ihprj = self.net.add_sparse_prj(
+            self.inpop,
+            self.hidpop,
+            p.nactHi,
+            p.nsilHi,
+            "ihprj",
         )
-        network.add_monitor(spikes[layer], name="%s_spikes" % layer)
+        self._configure_ihprj()
 
-    voltages = {}
-    for layer in set(network.layers) - {"X"}:
-        voltages[layer] = Monitor(
-            network.layers[layer], state_vars=["v"], time=int(time / dt), device=device
-        )
-        network.add_monitor(voltages[layer], name="%s_voltages" % layer)
+        self.hoprj = self.net.add_prj(self.hidpop, self.outpop, "hoprj")
+        self.hoprj.settaup(p.taup)
+        self.hoprj.seteps(p.eps)
 
-    inpt_ims, inpt_axes = None, None
-    spike_ims, spike_axes = None, None
-    weights_im = None
-    assigns_im = None
-    perf_ax = None
-    voltage_axes, voltage_ims = None, None
-    save_weights_fn = "plots/weights/weights.png"
-    save_performance_fn = "plots/performance/performance.png"
-    save_assignments_fn = "plots/assignments/assignments.png"
+    def _configure_ihprj(self):
+        p = self.param
 
-    directorys = ["plots", "plots/weights", "plots/performance", "plots/assignments"]
-    for directory in directorys:
-        if not os.path.exists(directory):
-            os.makedirs(directory)
+        self.ihprj.settaup(p.taup)
+        self.ihprj.seteps(p.eps)
+        self.ihprj.setwgain(1)
+        self.ihprj.setbgain(1)
 
-    # diagonal weights for increasing the inhibition
-    weights_mask = (1 - torch.diag(torch.ones(n_neurons))).to(device)
+        self.ihprj.setnswap(p.nswap)
+        self.ihprj.setswaprthr(p.swaprthr)
+        self.ihprj.setknrepl(p.knrepl)
 
-    # %% Train the network.
-    print("\nBegin training.\n")
-    start = t()
+        if p.nrepl >= 0:
+            self.ihprj.setnrepl(p.nrepl)
 
-    for epoch in range(n_epochs):
-        labels = []
+    def reset_state(self):
+        sim.pop_resetall()
 
-        if epoch % progress_interval == 0:
-            print("Progress: %d / %d (%.4f seconds)" % (epoch, n_epochs, t() - start))
+    def set_input(self, pat):
+        self.inpop.setinput(np.asarray(pat, dtype=np.float32).reshape(-1))
 
-        pbar = tqdm(total=n_train * 5 / 6)
-        for step, batch in enumerate(train_dataloader):
-            if step == n_train * 5 / 6:
-                break
+    def set_label(self, lbl):
+        self.outpop.setinput(np.asarray(lbl, dtype=np.float32).reshape(-1))
 
-            network.train(mode=True)
+    def run_steps(self, prns=None):
+        p = self.param
 
-            # Get next input sample.
-            inputs = {"X": batch["encoded_image"].transpose(0, 1).to(device)}
+        for _ in range(p.nloop):
+            if prns is None:
+                self.net.updstate()
+            else:
+                self.net.updstate_prns(prns)
+            sim.advance()
 
-            if step > 0:
-                if (step * train_batch_size) % update_inhibation_weights == 0:  # update_inhibation_weights=500
-                    if (step * train_batch_size) % (update_inhibation_weights * 10) == 0:
-                        network.Y_to_Y.w -= weights_mask * 50
-                    else:
-                        # Inhibit the connection even more
-                        network.Y_to_Y.w -= weights_mask * 0.5
+    def train_unsupervised_online(self, pat):
+        p = self.param
 
-                if (step * train_batch_size) % update_interval == 0:
-                    # Convert the array of labels into a tensor
-                    label_tensor = torch.tensor(labels, device=device)
+        self.hidpop.setbwgain(1)
+        self.reset_state()
+        self.set_input(pat)
 
-                    # Assign labels to excitatory layer neurons.
-                    assignments, proportions, rates = assign_labels(
-                        spikes=spike_record,
-                        labels=label_tensor,
-                        n_labels=n_classes,
-                        rates=rates,
-                    )
+        for loop in range(p.nloop):
+            prns = [1.0 if loop == p.nloop - 1 else 0.0, 0.0]
+            self.net.updstate_prns(prns)
+            if prns[0] > 0 and args.memristor_inference == 1:
+                Hj, denHi, Mi, Mj = p.Hhid, p.Hin, p.Min, p.Mhid          # 30, 784, 2, 100
+                denNi = denHi * Mi                                         # 1568
+                axoact = np.asarray(self.ihprj.get_field_flt("AXOACT"))
+                hihjhi = np.asarray(self.ihprj.get_field_int("HIHJHI"))
+                hr = hihjhi.reshape(Hj, denHi).astype(int)
+                src = (hr[:, :, None] * Mi + np.arange(Mi)[None, None, :]).reshape(Hj, denNi)
+                zi = (axoact[src] * (1 - p.eps) + p.eps).reshape(-1).astype(np.float32)   
+                zj = np.asarray(self.ihprj.get_field_flt("ZJ"), dtype=np.float32)
+                drive = {'Pi': zi,
+                         'Pj': zj,
+                         'Pji': (zi.reshape(Hj, 1, denNi) * zj.reshape(Hj, Mj, 1)).reshape(-1)}
+                mem_P = {}
+                for name in ('Pi', 'Pj', 'Pji'):
+                    self.m.mapping_write_bcpnn(drive=torch.from_numpy(drive[name]).reshape(1, -1), trace=name)
+                    mem_P[name] = self.m.mapping_read_bcpnn(name).reshape(-1).numpy().astype(np.float32)
+                    mem_P[name] = np.maximum(mem_P[name], p.eps)       # engine floor: a zero-state cell reads < 0 through the ADC (floor rounding) and log() would give NaN
+                self.ihprj.set_field_flt("PI", mem_P['Pi'])
+                self.ihprj.set_field_flt("PJ", mem_P['Pj'])
+                self.ihprj.set_field_flt("PJI", mem_P['Pji'])
+                self.ihprj.updbw(force=True)                               # Bj, Wji from the memristor traces
+            sim.advance()
 
-                    labels = []
+        self._maybe_update_connections()
 
-            # labels.append(batch["label"])
-            labels.extend(batch["label"].tolist())
+    def train_supervised_online(self, pat, lbl):
+        p = self.param
 
-            # Run the network on the input.
-            temp_spikes = 0
-            network.run(inputs=inputs, time=time, input_time_dim=1, init_batch_sign=init_batch_sign)
-            temp_spikes = spikes["Y"].get("s").permute((1, 0, 2))
+        # Clamp output label during supervised learning.
+        self.hidpop.setnampl(0)
+        self.outpop.setbwgain(0)
 
-            # Get voltage recording.
-            exc_voltages = som_voltage_monitor.get("v")
+        self.reset_state()
+        self.set_input(pat)
+        self.set_label(lbl)
 
-            # Add to spikes recording.
-            spike_record[
-            (step * train_batch_size) % update_interval: (step * train_batch_size) % update_interval + temp_spikes.size(
-                0)
-            ].copy_(temp_spikes, non_blocking=True)
+        for loop in range(p.nloop):
+            prns = [0.0, 1.0 if loop == p.nloop - 1 else 0.0]
+            self.net.updstate_prns(prns)
+            sim.advance()
 
-            # %% Update
-            network.reset_state_variables()  # Reset state variables.
-            pbar.set_description_str("Train progress: ")
-            pbar.update()
-            init_batch_sign = False
+        # Re-enable output bottom-up support and update output projection.
+        self.outpop.setbwgain(1)
+        self.hoprj.updbw()
 
-            # %% Test while training
-            network.train(mode=False)
+    def infer_online(self, pat, lbl=None):
+        self.reset_state()
+        self.set_input(pat)
+        self.outpop.clearinput()
 
-            if ((epoch * train_size + (step + 1) * train_batch_size) >= init_num) and \
-                    ((epoch * train_size + (step + 1) * train_batch_size - current_capacity) % (train_batch_size * regular_step) == 0 or \
-                     (((epoch * train_size + (step + 1) * train_batch_size - current_capacity) % (train_batch_size * slow_step) == 0) and (tmp_acc > critical_acc))):
-                accuracy_test = {"all": 0, "proportion": 0}
-                print("\nBegin testing on validation dataset while training\n")
-                for batch_test in tqdm(val_dataloader):
-                    # Get next input sample.
-                    inputs_test = {"X": batch_test["encoded_image"].transpose(0, 1).to(device)}
+        self.run_steps()
 
-                    # Run the network on the input.
-                    network.run(inputs=inputs_test, time=time, input_time_dim=1, init_batch_sign=True)
+        pred_vec = np.asarray(self.outpop.get_field_flt("ACT"))
+        pred_id = int(np.argmax(pred_vec))
 
-                    spike_record_test = spikes["Y"].get("s").transpose(0, 1)
-                    label_tensor_test = torch.tensor(batch_test["label"], device=device)
+        if lbl is None:
+            return pred_id, pred_vec
 
-                    # Get network predictions.
-                    all_activity_pred_test = all_activity(
-                        spikes=spike_record_test, assignments=assignments, n_labels=n_classes
-                    )
+        true_id = int(np.argmax(lbl))
+        return int(pred_id == true_id), pred_id, pred_vec
 
-                    # Compute network accuracy according to available classification strategies.
-                    accuracy_test["all"] += float(torch.sum(label_tensor_test.long() == all_activity_pred_test).item())
-                    network.reset_state_variables()
+    def _maybe_update_connections(self):
+        p = self.param
 
-                # Strategies of when to end the training
-                tmp_acc = accuracy_test["all"] * 100 / val_size
-                if tmp_acc >= best_acc:
-                    signal_break = 0
-                    best_acc = tmp_acc
-                    best_capacity = epoch * train_size + (step + 1) * train_batch_size
-                    torch.save(network.state_dict(), "best_model.pth")
-                elif tmp_acc < critical_acc:
-                    signal_break += regular_step
-                else:
-                    signal_break += slow_step
+        if p.updconnint <= 0:
+            return
 
-                current_capacity = epoch * train_size + (step + 1) * train_batch_size
-                print("\nCurrent all activity accuracy: %.4f, Currentcapacity: %d" % (accuracy_test["all"] / val_size, current_capacity))
-                print("\nBest all activity accuracy: %.4f, Best capacity: %d, Signal break:%d.\n" % \
-                      (best_acc, best_capacity, signal_break))
-                print("Testing while training complete.\n")
+        if self.updconn_counter % p.updconnint == 0:
+            self.ihprj.swapconns()
+            self.ihprj.replconns()
 
-                if signal_break >= patience:
-                    total_capacity = epoch * train_size + (step + 1) * train_batch_size
-                    break
+            if p.nswap == 0:
+                self.ihprj.updMIsc()
 
-            network.train(mode=True)
-            if (sim_params['device_name'] != 'trace' and network.learning):
-                for l in network.layers:
-                    network.layers[l].update_SAF_mask()
-                network.mem_t_update()
-            total_capacity = epoch * train_size + (step + 1) * train_batch_size
+            self.ihprj.miscsum()
 
-        if signal_break >= patience:
-            break
+        self.updconn_counter += 1
 
-    # %% Load MNIST test data.
-    test_dataset = MNIST(
-        PoissonEncoder(time=time, dt=dt),
-        None,
-        root=os.path.join("..", "..", "data", "MNIST"),
-        download=True,
-        train=False,
-        transform=transforms.Compose(
-            [transforms.ToTensor(), transforms.Lambda(lambda x: x * intensity)]
-        ),
-    )
 
-    # Create a dataloader to iterate and batch data
-    test_dataloader = DataLoader(
-        test_dataset, batch_size=test_batch_size, shuffle=False, num_workers=n_workers, pin_memory=gpu
-    )
+# --------------------------------------------------
+# Training / evaluation
+# --------------------------------------------------
 
-    # Sequence of accuracy estimates.
-    accuracy = {"all": 0, "proportion": 0}
+def train_model(model, mnist):
+    p = model.param
 
-    # %% Test the network.
-    print("\nBegin testing\n")
-    network.load_state_dict(torch.load("best_model.pth"))
-    network.train(mode=False)
+    print("\nTraining")
 
-    print("Test progress: ")
-    for batch in tqdm(test_dataloader):
-        # Get next input sample.
-        inputs = {"X": batch["encoded_image"].transpose(0, 1).to(device)}
+    print("\nUnsupervised")
+    for epoch in range(p.nepoch_usup):
+        for pat, _ in iter_encoded_mnist(mnist, "train", p.trnpat):
+            model.train_unsupervised_online(pat)
 
-        # Run the network on the input.
-        network.run(inputs=inputs, time=time, input_time_dim=1)
-
-        spike_record = spikes["Y"].get("s").transpose(0, 1)
-
-        # Convert the array of labels into a tensor
-        label_tensor = torch.tensor(batch["label"], device=device)
-
-        # Get network predictions.
-        all_activity_pred = all_activity(
-            spikes=spike_record, assignments=assignments, n_labels=n_classes
+        print(
+            f"  epoch {epoch + 1}/{p.nepoch_usup} "
+            f"| simstep {sim.get_simstep():6d} "
+            f"| swapped {model.ihprj.gnswapped:5d}"
         )
 
-        # Compute network accuracy according to available classification strategies.
-        accuracy["all"] += float(torch.sum(label_tensor.long() == all_activity_pred).item())
+    print("\nSupervised")
+    for epoch in range(p.nepoch_sup):
+        for pat, lbl in iter_encoded_mnist(mnist, "train", p.trnpat):
+            model.train_supervised_online(pat, lbl)
 
-        network.reset_state_variables()  # Reset state variables.
-
-    print("\nAll activity accuracy: %.4f" % (accuracy["all"] / args.n_test))
-    print("Testing complete.\n")
+        print(f"  epoch {epoch + 1}/{p.nepoch_sup} | simstep {sim.get_simstep():6d}")
 
 
-    # %% output+clear
-    out_txt = 'All activity accuracy:' + str(accuracy["all"] / args.n_test) + '\tbest capacity:' + str(
-        best_capacity) + '\ttest capacity:' + str(total_capacity) + '\ttotal time:' + str(t() - start) + '\n'
-    out.write(out_txt)
-    out.close()
+def evaluate(model, mnist, split, n):
+    n_correct = 0
 
-    del network
+    for pat, lbl in iter_encoded_mnist(mnist, split, n):
+        correct, _, _ = model.infer_online(pat, lbl)
+        n_correct += correct
+
+    return 100.0 * n_correct / n
+
+
+# --------------------------------------------------
+# Main
+# --------------------------------------------------
+
+def main():
+
+    param = Params(
+        trnpat=args.n_train,
+        tenpat=args.n_test,
+        nepoch_usup=args.epochs_usup,
+        nepoch_sup=args.epochs_sup,
+    )
+
+    print("\nBCPNNSim MNIST")
+    print(f"architecture : {param.Hin}x{param.Min} -> {param.Hhid}x{param.Mhid} -> {param.Hut}x{param.Mut}")
+    print(f"train        : {param.trnpat}")
+    print(f"test         : {param.tenpat}")
+
+    mnist = MNISTDataset()
+    model = BCPNNMNISTModel(param)
+
+    train_model(model, mnist)
+    
+
+    train_acc = evaluate(model, mnist, "train", param.trnpat)
+    test_acc = evaluate(model, mnist, "test", param.tenpat)
+
+    plot_receptive_fields(model, save_dir=r"figures")
+    plot_filters(model, save_dir="figures")
+    print(f"saved figures to: figures")
+    
+    print("\nResults")
+    print(f"train accuracy : {train_acc:.2f}%")
+    print(f"test accuracy  : {test_acc:.2f}%")
+    print("\nFin.")
+
+
+if __name__ == "__main__":
+    main()    
+
