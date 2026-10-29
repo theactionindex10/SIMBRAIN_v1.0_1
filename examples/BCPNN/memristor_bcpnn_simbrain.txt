@@ -1,0 +1,36 @@
+Training
+
+Unsupervised
+
+
+
+
+
+  epoch 1/5 | simstep   3000 | swapped  1585
+  epoch 2/5 | simstep   6000 | swapped  2484
+  epoch 3/5 | simstep   9000 | swapped  3238
+  epoch 4/5 | simstep  12000 | swapped  3831
+  epoch 5/5 | simstep  15000 | swapped  4345
+
+Supervised
+  epoch 1/5 | simstep  18000
+  epoch 2/5 | simstep  21000
+  epoch 3/5 | simstep  24000
+  epoch 4/5 | simstep  27000
+  epoch 5/5 | simstep  30000
+saved figures to: figures
+
+Results
+train accuracy : 78.30%
+test accuracy  : 65.40%
+
+Fin.
+51565.95
+user 1457.18
+system 2:19:39
+elapsed 
+632% CPU 
+(0 avgtext+0 avg data 2011544 max resident)k
+224 inputs + 200 outputs 
+(3401 major + 304277707 minor)page faults 
+0 swaps
