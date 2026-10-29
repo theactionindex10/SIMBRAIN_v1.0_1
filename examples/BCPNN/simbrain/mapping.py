@@ -1,3 +1,4 @@
+import os
 from typing import Iterable, Optional, Union
 from simbrain.memarray import MemristorArray
 from simbrain.periphcircuit import DAC_Module
@@ -456,6 +457,7 @@ class BCPNNMapping(Mapping):
         sim_params: dict = {},
         shape: dict = {'Pi' : 47040, 'Pj' : 3000, 'Pji' : 4704000},
         traces: Iterable[str] = ('Zi', 'Zj', 'Pi', 'Pj'),
+        last_read: dict = {},
         **kwargs,
     ) -> None:
         # language=rst
@@ -515,6 +517,7 @@ class BCPNNMapping(Mapping):
         self.mem_v_read = torch.zeros(1, batch_size, 1, self.shape[0], device=self.mem_v_read.device)
         self.x = torch.zeros(batch_size, *self.shape, device=self.x.device)
         self.s = torch.zeros(batch_size, *self.shape, device=self.s.device)
+        
 
         if self.learning:
             mem_t_matrix = (self.batch_interval * torch.arange(self.batch_size, device=self.mem_t.device))
@@ -528,6 +531,9 @@ class BCPNNMapping(Mapping):
         for mem_array in self.mem_arrays.values():
             mem_array.mem_t = self.mem_t.clone()
             mem_array.mem_wr_t = self.mem_wr_t.clone()
+            
+        self.last_read = {}
+
         
         
         
@@ -549,6 +555,13 @@ class BCPNNMapping(Mapping):
         """
         
         #Taken from BCPNNSim2.1 code - trace values calculated from Prj::updtraces
+        cache_file = os.path.splitext(trace_file)[0] + '_calib.npz'
+        if os.path.exists(cache_file) and os.path.getmtime(cache_file) >= os.path.getmtime(trace_file):
+            c = np.load(cache_file, allow_pickle=True)
+            self.v_pair = c['v_pair'].item()
+            self.group = {name: torch.from_numpy(c['group_' + name]) for name in self.v_pair}
+            self._set_cell_voltages()
+            return
         d = np.load(trace_file)
         axoact, hihjhi, zj = d['axoact'], d['hihjhi'], d['zj']
         pi, pj, pji, pji_index = d['pi'], d['pj'], d['pji'], d['pji_index']
@@ -649,6 +662,27 @@ class BCPNNMapping(Mapping):
                 if recorded[name][gname] is not None:                  # transcription check where the engine trace exists
                     assert np.abs(golden[1:].numpy() - recorded[name][gname]).max() < 1e-6, (name, gname)
                 self.v_pair[name][gname] = self._calibrate_driven(drive, golden, test_array, plot, name=f'{name}_{gname}')
+        self._set_cell_voltages()
+        np.savez(cache_file, v_pair=np.array(self.v_pair, dtype=object),
+                 **{'group_' + name: self.group[name].numpy() for name in self.v_pair})
+
+    def to(self, *args, **kwargs):
+        super().to(*args, **kwargs)
+        dev = self.mem_v.device
+        for d in ('vpos_cell', 'vneg_cell', 'group'):
+            if hasattr(self, d):
+                setattr(self, d, {k: v.to(dev) for k, v in getattr(self, d).items()})
+        self.last_read = {}
+        return self
+
+    def _set_cell_voltages(self):
+        self.vpos_cell, self.vneg_cell = {}, {}
+        for name in self.v_pair:
+            pairs = list(self.v_pair[name].values())
+            vpos_tab = torch.tensor([q[0] for q in pairs], dtype=torch.float32)
+            vneg_tab = torch.tensor([q[1] for q in pairs], dtype=torch.float32)
+            self.vpos_cell[name] = vpos_tab[self.group[name]].unsqueeze(1)
+            self.vneg_cell[name] = vneg_tab[self.group[name]].unsqueeze(1)
         
   #Comparing the memristor-based trace to the golden traces. The golden traces are obtained from BCPNNSim2.1
     def _calibrate_driven(self, drive, trace, test_array, plot=False, name=''):
@@ -739,31 +773,24 @@ class BCPNNMapping(Mapping):
                           controller would in hardware.  Decided 2026-10-27.
         :param trace: Current trace being written 
         """
-        # One (v_pos, v_neg) per group; each cell takes the pair of its own group (self.group[trace], 0/1/2).
-        pairs = list(self.v_pair[trace].values())
-        vpos_tab = torch.tensor([p[0] for p in pairs], dtype=torch.float32)
-        vneg_tab = torch.tensor([p[1] for p in pairs], dtype=torch.float32)
         write_time = 1
         #if drive.dim() == 4:
         #    self.s = drive.flatten(2, 3)
         #    x_cur = x_current.flatten(2,3)
         
         self.s = torch.unsqueeze(drive, 1)                 # (1 ,N) -> (1, 1, N) 
-        x_cur = self.mapping_read_bcpnn(trace)             # ADC read of the array, (1, 1, N): the controller's view of P
-        group = self.group[trace].unsqueeze(1) if self.group[trace].shape[-1] == x_cur.shape[-1] \
-            else torch.zeros_like(x_cur, dtype=torch.int64)   # arrays smaller than the recording: group 0 for all
-        vpos = vpos_tab[group]                             # per-cell voltages, (1, 1, N)
-        vneg = vneg_tab[group]
+        if trace not in self.last_read:
+            self.last_read[trace] = self.mapping_read_bcpnn(trace)            
+        x_cur = self.last_read[trace]
+        
         #elif drive.dim() == 3:
         #    self.s = drive.flatten(1, 2).unsqueeze(1)          # (B, H, M) -> (B, 1, H*M) single memristor row
         #    x_cur = x_current.flatten(1, 2).unsqueeze(1)	
         
         # nn to mem
         mem_up = self.s > x_cur
-        self.mem_v = torch.zeros_like(x_cur)
-        self.mem_v[mem_up] = vpos[mem_up]
-        self.mem_v[~mem_up] = vneg[~mem_up]
-        v_amp = [float(vpos_tab.max()), float(vneg_tab.min())]   # amplitude bounds for the energy bookkeeping
+        self.mem_v = torch.where(mem_up, self.vpos_cell[trace], self.vneg_cell[trace])
+        v_amp = [float(self.vpos_cell[trace].max()), float(self.vneg_cell[trace].min())]
 
         self.DAC_module.DAC_write(mem_v=self.mem_v, mem_v_amp=v_amp)
 
@@ -772,7 +799,8 @@ class BCPNNMapping(Mapping):
         # mem to nn
         self.x = (mem_c - self.Gon) * self.trans_ratio
 
-        self.x = self.x.reshape(drive.shape)
+        self.last_read[trace] = self.mapping_read_bcpnn(trace)
+        self.x = self.last_read[trace].reshape(drive.shape)
         
         return self.x
         
@@ -946,6 +974,7 @@ class MLPMapping(Mapping):
         self.write_pulse_no = torch.zeros(batch_size, *self.shape, device=self.write_pulse_no.device)
 
         self.norm_ratio = torch.zeros(batch_size, device=self.norm_ratio.device) 
+
 
 
     def mapping_write_mlp(self, target_x):
