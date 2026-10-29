@@ -27,6 +27,8 @@ def _read_weight_trace(prj):
     return weight_store, pji_store
 
 # ---- 3. the known change: scale PJI by 1.1 ----
+ihprj.updbw(force=True)      # [added 2026-10-29] baseline: the weights the engine leaves after updstate differ from a forced
+                             # recompute on the same P (435,200 of 4.7M), so compare force-vs-force
 w_before, pji_before = _read_weight_trace(ihprj)
 print("Before weights:", w_before) 
 print("Before pji:", pji_before) 
