@@ -165,7 +165,10 @@ class BCPNNMNISTModel:
         if(args.memristor_inference == 1):
             self.m = BCPNNMapping(sim_params, shape = {'Pi': 47040, 'Pj': 3000, 'Pji': 4704000} )
             self.m.voltage_generation_bcpnn('notes/ihprj_golden_traces.npz')
+            self.device = torch.device('cuda' if (gpu and torch.cuda.is_available()) else 'cpu')
+            self.m.to(self.device)
             self.m.set_batch_size_bcpnn(1,True)
+            print(f"memristor arrays on {self.device}")
 
         self.ihprj = self.net.add_sparse_prj(
             self.inpop,
@@ -238,8 +241,8 @@ class BCPNNMNISTModel:
                          'Pji': (zi.reshape(Hj, 1, denNi) * zj.reshape(Hj, Mj, 1)).reshape(-1)}
                 mem_P = {}
                 for name in ('Pi', 'Pj', 'Pji'):
-                    self.m.mapping_write_bcpnn(drive=torch.from_numpy(drive[name]).reshape(1, -1), trace=name)
-                    mem_P[name] = self.m.mapping_read_bcpnn(name).reshape(-1).numpy().astype(np.float32)
+                    x= self.m.mapping_write_bcpnn(drive=torch.from_numpy(drive[name]).reshape(1, -1).to(self.device), trace=name)
+                    mem_P[name] = x.reshape(-1).cpu().numpy().astype(np.float32)
                     mem_P[name] = np.maximum(mem_P[name], p.eps)       # engine floor: a zero-state cell reads < 0 through the ADC (floor rounding) and log() would give NaN
                 self.ihprj.set_field_flt("PI", mem_P['Pi'])
                 self.ihprj.set_field_flt("PJ", mem_P['Pj'])
