@@ -1,0 +1,28 @@
+
+BCPNNSim MNIST
+architecture : 784x2 -> 30x100 -> 1x10
+train        : 1000
+test         : 1000
+
+Training
+
+Unsupervised
+  epoch 1/5 | simstep   3000 | swapped  1071
+  epoch 2/5 | simstep   6000 | swapped  2773
+  epoch 3/5 | simstep   9000 | swapped  4264
+  epoch 4/5 | simstep  12000 | swapped  5328
+  epoch 5/5 | simstep  15000 | swapped  5916
+
+Supervised
+  epoch 1/5 | simstep  18000
+  epoch 2/5 | simstep  21000
+  epoch 3/5 | simstep  24000
+  epoch 4/5 | simstep  27000
+  epoch 5/5 | simstep  30000
+saved figures to: figures
+
+Results
+train accuracy : 99.60%
+test accuracy  : 89.60%
+
+Fin.
