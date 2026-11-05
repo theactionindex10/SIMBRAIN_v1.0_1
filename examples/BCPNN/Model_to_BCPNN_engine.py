@@ -2,10 +2,13 @@ import torch
 import argparse
 from dataclasses import dataclass
 import numpy as np
-import BcpnnSim as sim  
+import sys, os, json
+_engine_dirs = [os.path.expanduser(d) for d in ('~/PhD_Work/BCPNNSim2.1_memristor/python_api', '~/BCPNNSim2.1_memristor/python_api')]   # local WSL / cheddar
+sys.path.insert(0, next(d for d in _engine_dirs if os.path.isdir(d)))   # the COPY of the engine with memristor traces
+import BcpnnSim as sim
+assert 'BCPNNSim2.1_memristor' in sim.__file__, sim.__file__
 from plot import plot_receptive_fields, plot_filters
 from preprocess import MNISTDataset
-from simbrain.mapping import BCPNNMapping
 
 # network configuration
 parser = argparse.ArgumentParser(description="Run MNIST with a Python-built BCPNNSim network")
@@ -35,8 +38,6 @@ parser.add_argument("--device_roadmap", type=str, default='HP') # HP: High Perfo
 parser.add_argument("--temperature", type=int, default=300) # Temperature will only affect the peripheral circuits, not the memristor itself
 parser.add_argument("--hardware_estimation", type=int, default=False)
 parser.add_argument("--memristor_inference", type=int, default=0)
-parser.add_argument("--mem_traces", type=str, default="Pi,Pj,Pji")   # ablation: traces routed through the memristors; the others stay digital in the engine
-parser.add_argument("--updconnint", type=int, default=1000)         # structural plasticity interval (0 = off), passed to Params
 
 parser.set_defaults(plot=False, gpu=True)
 
@@ -47,7 +48,6 @@ n_test = args.n_test
 n_train = args.n_train
 plot = args.plot
 gpu = args.gpu
-mem_traces = set(t.strip() for t in args.mem_traces.split(",") if t.strip())
 sim_params = {'device_structure': args.memristor_structure, 'device_name': args.memristor_device,
               'c2c_variation': args.c2c_variation, 'd2d_variation': args.d2d_variation,
               'stuck_at_fault': args.stuck_at_fault, 'retention_loss': args.retention_loss,
@@ -166,9 +166,7 @@ class BCPNNMNISTModel:
         p = self.param
         
         if(args.memristor_inference == 1):
-            self.m = BCPNNMapping(sim_params, shape = {'Pi': 47040, 'Pj': 3000, 'Pji': 4704000} )
-            self.m.voltage_generation_bcpnn('notes/ihprj_golden_traces.npz')
-            self.m.set_batch_size_bcpnn(1,True)
+            self.memristor_setup_pending = True      # ihprj does not exist yet; done right after _configure_ihprj below
 
         self.ihprj = self.net.add_sparse_prj(
             self.inpop,
@@ -178,10 +176,35 @@ class BCPNNMNISTModel:
             "ihprj",
         )
         self._configure_ihprj()
+        if getattr(self, 'memristor_setup_pending', False):
+            self._load_memristor_into_engine()
 
         self.hoprj = self.net.add_prj(self.hidpop, self.outpop, "hoprj")
         self.hoprj.settaup(p.taup)
         self.hoprj.seteps(p.eps)
+
+    def _load_memristor_into_engine(self):
+        """Hand the SIMBRAIN calibration (band labels + per-band voltage pairs) and the ideal device constants to the
+        engine copy, which then pulses/reads the P traces inside Prj::updtraces. Replaces the Python hook."""
+        c = np.load('notes/ihprj_golden_traces_calib.npz', allow_pickle=True)
+        v_pair = c['v_pair'].item()
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # SIMBRAIN repo root (works locally and on cheddar)
+        d = json.load(open(root + '/memristor_device_info.json'))[args.memristor_device]
+        w = json.load(open(root + '/wire_tech_info.json'))[str(args.wire_width)]
+        mem_size = d['mem_size'] * 1e-9
+        wuc = d['relax_ratio_col'] * mem_size * w['Rho'] / (w['AR'] * args.wire_width * args.wire_width * 1e-18)
+        wur = d['relax_ratio_row'] * mem_size * w['Rho'] / (w['AR'] * args.wire_width * args.wire_width * 1e-18)
+        dev = [d['v_off'], d['v_on'], d['k_off'], d['k_on'], d['alpha_off'], d['alpha_on'], d['P_off'], d['P_on'],
+               d['delta_t'] * d['duty_ratio'], d['G_on'], d['G_off'], wuc, wur,
+               args.ADC_precision, 1.0 if args.ADC_rounding_function == 'floor' else 0.0]
+        bands = {n: c['group_' + n].reshape(-1).astype(np.int32) for n in ('Pi', 'Pj', 'Pji')}
+        vpos = {n: [float(q[0]) for q in v_pair[n].values()] for n in ('Pi', 'Pj', 'Pji')}
+        vneg = {n: [float(q[1]) for q in v_pair[n].values()] for n in ('Pi', 'Pj', 'Pji')}
+        self.ihprj.set_memristor(dev, bands['Pi'], bands['Pj'], bands['Pji'],
+                                 vpos['Pi'], vneg['Pi'], vpos['Pj'], vneg['Pj'], vpos['Pji'], vneg['Pji'])
+        print(f"memristor traces inside the engine: ihprj.memristor = {self.ihprj.memristor} | bands "
+              f"{ {n: int(bands[n].max()) + 1 for n in bands} }")
+
 
     def _configure_ihprj(self):
         p = self.param
@@ -227,27 +250,7 @@ class BCPNNMNISTModel:
         for loop in range(p.nloop):
             prns = [1.0 if loop == p.nloop - 1 else 0.0, 0.0]
             self.net.updstate_prns(prns)
-            if prns[0] > 0 and args.memristor_inference == 1:
-                Hj, denHi, Mi, Mj = p.Hhid, p.Hin, p.Min, p.Mhid          # 30, 784, 2, 100
-                denNi = denHi * Mi                                         # 1568
-                axoact = np.asarray(self.ihprj.get_field_flt("AXOACT"))
-                hihjhi = np.asarray(self.ihprj.get_field_int("HIHJHI"))
-                hr = hihjhi.reshape(Hj, denHi).astype(int)
-                src = (hr[:, :, None] * Mi + np.arange(Mi)[None, None, :]).reshape(Hj, denNi)
-                zi = (axoact[src] * (1 - p.eps) + p.eps).reshape(-1).astype(np.float32)   
-                zj = np.asarray(self.ihprj.get_field_flt("ZJ"), dtype=np.float32)
-                drive = {'Pi': zi,
-                         'Pj': zj,
-                         'Pji': (zi.reshape(Hj, 1, denNi) * zj.reshape(Hj, Mj, 1)).reshape(-1)}
-                mem_P = {}
-                for name in mem_traces:                                  # ablation: only the routed traces
-                    x= self.m.mapping_write_bcpnn(drive=torch.from_numpy(drive[name]).reshape(1, -1), trace=name)
-                    mem_P[name] = x.reshape(-1).numpy().astype(np.float32)
-                    mem_P[name] = np.maximum(mem_P[name], p.eps)       # engine floor: a zero-state cell reads < 0 through the ADC (floor rounding) and log() would give NaN
-                if 'Pi' in mem_traces:  self.ihprj.set_field_flt("PI", mem_P['Pi'])
-                if 'Pj' in mem_traces:  self.ihprj.set_field_flt("PJ", mem_P['Pj'])
-                if 'Pji' in mem_traces: self.ihprj.set_field_flt("PJI", mem_P['Pji'])
-                self.ihprj.updbw(force=True)                               # Bj, Wji from the memristor traces
+            # (memristor path now lives inside the engine copy's Prj::updtraces; no per-step hook)
             sim.advance()
 
         self._maybe_update_connections()
@@ -355,14 +358,12 @@ def main():
         tenpat=args.n_test,
         nepoch_usup=args.epochs_usup,
         nepoch_sup=args.epochs_sup,
-        updconnint=args.updconnint,
     )
 
     print("\nBCPNNSim MNIST")
     print(f"architecture : {param.Hin}x{param.Min} -> {param.Hhid}x{param.Mhid} -> {param.Hut}x{param.Mut}")
     print(f"train        : {param.trnpat}")
     print(f"test         : {param.tenpat}")
-    print(f"memristor traces : {sorted(mem_traces) if args.memristor_inference == 1 else 'none (golden)'} | updconnint {param.updconnint}")
 
     mnist = MNISTDataset()
     model = BCPNNMNISTModel(param)
