@@ -39,6 +39,12 @@ parser.add_argument("--temperature", type=int, default=300) # Temperature will o
 parser.add_argument("--hardware_estimation", type=int, default=False)
 parser.add_argument("--memristor_inference", type=int, default=0)
 
+
+parser.add_argument("--seed", type=int, default=88192386)                 # engine RNG seed (Params.seed)
+parser.add_argument("--adc_range", type=float, default=0.2)               # ADC full scale for Pj and Pji as a fraction of Goff (Pi stays 1.0)
+parser.add_argument("--pulse_mode", type=str, default='gap')               # gap = VTEAM inverted per cell per step; pair = fixed (vpos, vneg) per band
+
+
 parser.set_defaults(plot=False, gpu=True)
 
 args = parser.parse_args()
@@ -194,16 +200,30 @@ class BCPNNMNISTModel:
         mem_size = d['mem_size'] * 1e-9
         wuc = d['relax_ratio_col'] * mem_size * w['Rho'] / (w['AR'] * args.wire_width * args.wire_width * 1e-18)
         wur = d['relax_ratio_row'] * mem_size * w['Rho'] / (w['AR'] * args.wire_width * args.wire_width * 1e-18)
+<<<<<<< HEAD
         dev = [d['v_off'], d['v_on'], d['k_off'], d['k_on'], d['alpha_off'], d['alpha_on'], d['P_off'], d['P_on'],
                d['delta_t'] * d['duty_ratio'], d['G_on'], d['G_off'], wuc, wur,
                args.ADC_precision, 1.0 if args.ADC_rounding_function == 'floor' else 0.0]
+=======
+        adc_full_scale = {'Pi': 1.0, 'Pj': args.adc_range, 'Pji': args.adc_range}
+        dev = [d['v_off'], d['v_on'], d['k_off'], d['k_on'], d['alpha_off'], d['alpha_on'], d['P_off'], d['P_on'],
+               d['delta_t'] * d['duty_ratio'], d['G_on'], d['G_off'], wuc, wur,
+               args.ADC_precision, 1.0 if args.ADC_rounding_function == 'floor' else 0.0,
+               1.0 if args.pulse_mode == 'gap' else 0.0, adc_full_scale['Pi'], adc_full_scale['Pj'], adc_full_scale['Pji'],
+               0.001]                                                 # taupdt = timestep/taup of the P traces (pyMNIST: 0.001)
+>>>>>>> 9e545de (Updated script)
         bands = {n: c['group_' + n].reshape(-1).astype(np.int32) for n in ('Pi', 'Pj', 'Pji')}
         vpos = {n: [float(q[0]) for q in v_pair[n].values()] for n in ('Pi', 'Pj', 'Pji')}
         vneg = {n: [float(q[1]) for q in v_pair[n].values()] for n in ('Pi', 'Pj', 'Pji')}
         self.ihprj.set_memristor(dev, bands['Pi'], bands['Pj'], bands['Pji'],
                                  vpos['Pi'], vneg['Pi'], vpos['Pj'], vneg['Pj'], vpos['Pji'], vneg['Pji'])
+<<<<<<< HEAD
         print(f"memristor traces inside the engine: ihprj.memristor = {self.ihprj.memristor} | bands "
               f"{ {n: int(bands[n].max()) + 1 for n in bands} }")
+=======
+        print(f"memristor traces inside the engine: ihprj.memristor = {self.ihprj.memristor} | pulse mode {args.pulse_mode} "
+              f"| ADC {args.ADC_precision} bits, full scale {adc_full_scale} | bands { {n: int(bands[n].max()) + 1 for n in bands} }")
+>>>>>>> 9e545de (Updated script)
 
 
     def _configure_ihprj(self):
@@ -358,12 +378,18 @@ def main():
         tenpat=args.n_test,
         nepoch_usup=args.epochs_usup,
         nepoch_sup=args.epochs_sup,
+
+        seed=args.seed,
+
     )
 
     print("\nBCPNNSim MNIST")
     print(f"architecture : {param.Hin}x{param.Min} -> {param.Hhid}x{param.Mhid} -> {param.Hut}x{param.Mut}")
     print(f"train        : {param.trnpat}")
     print(f"test         : {param.tenpat}")
+
+    print(f"seed         : {param.seed}")
+
 
     mnist = MNISTDataset()
     model = BCPNNMNISTModel(param)
