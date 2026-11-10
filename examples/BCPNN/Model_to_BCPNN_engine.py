@@ -199,30 +199,29 @@ class BCPNNMNISTModel:
         mem_size = d['mem_size'] * 1e-9
         wuc = d['relax_ratio_col'] * mem_size * w['Rho'] / (w['AR'] * args.wire_width * args.wire_width * 1e-18)
         wur = d['relax_ratio_row'] * mem_size * w['Rho'] / (w['AR'] * args.wire_width * args.wire_width * 1e-18)
-<<<<<<< HEAD
+
         dev = [d['v_off'], d['v_on'], d['k_off'], d['k_on'], d['alpha_off'], d['alpha_on'], d['P_off'], d['P_on'],
                d['delta_t'] * d['duty_ratio'], d['G_on'], d['G_off'], wuc, wur,
                args.ADC_precision, 1.0 if args.ADC_rounding_function == 'floor' else 0.0]
-=======
+
         adc_full_scale = {'Pi': 1.0, 'Pj': args.adc_range, 'Pji': args.adc_range}
         dev = [d['v_off'], d['v_on'], d['k_off'], d['k_on'], d['alpha_off'], d['alpha_on'], d['P_off'], d['P_on'],
                d['delta_t'] * d['duty_ratio'], d['G_on'], d['G_off'], wuc, wur,
                args.ADC_precision, 1.0 if args.ADC_rounding_function == 'floor' else 0.0,
                1.0 if args.pulse_mode == 'gap' else 0.0, adc_full_scale['Pi'], adc_full_scale['Pj'], adc_full_scale['Pji'],
                0.001]                                                 # taupdt = timestep/taup of the P traces (pyMNIST: 0.001)
->>>>>>> 9e545de (Updated script)
         bands = {n: c['group_' + n].reshape(-1).astype(np.int32) for n in ('Pi', 'Pj', 'Pji')}
         vpos = {n: [float(q[0]) for q in v_pair[n].values()] for n in ('Pi', 'Pj', 'Pji')}
         vneg = {n: [float(q[1]) for q in v_pair[n].values()] for n in ('Pi', 'Pj', 'Pji')}
         self.ihprj.set_memristor(dev, bands['Pi'], bands['Pj'], bands['Pji'],
                                  vpos['Pi'], vneg['Pi'], vpos['Pj'], vneg['Pj'], vpos['Pji'], vneg['Pji'])
-<<<<<<< HEAD
+
         print(f"memristor traces inside the engine: ihprj.memristor = {self.ihprj.memristor} | bands "
               f"{ {n: int(bands[n].max()) + 1 for n in bands} }")
-=======
+
         print(f"memristor traces inside the engine: ihprj.memristor = {self.ihprj.memristor} | pulse mode {args.pulse_mode} "
               f"| ADC {args.ADC_precision} bits, full scale {adc_full_scale} | bands { {n: int(bands[n].max()) + 1 for n in bands} }")
->>>>>>> 9e545de (Updated script)
+
 
 
     def _configure_ihprj(self):
