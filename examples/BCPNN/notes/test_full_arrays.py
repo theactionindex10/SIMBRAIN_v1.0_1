@@ -32,6 +32,7 @@ m.set_batch_size_bcpnn(1,True)
 # ---- 3. rebuild Zi for every cell and every step, as in voltage_generation_bcpnn: shape (T, Hj*denNi) ----
 hr = hihjhi.reshape(T, Hj, denHi).astype(int)
 zi = np.empty((T,Hj*denNi),dtype=np.float32)
+zji = np.empty((T,Nj*denNi), dtype=np.float32)
 
 for t in range(T):
     src = (hr[t][:,:,None] * Mi + np.arange(Mi)[None, None, :]).reshape(Hj, denNi)
@@ -41,8 +42,9 @@ for t in range(T):
 #         Pj  <- zj[t]                                   (Nj,)
 #         Pji <- Zi * Zj for every synapse, laid out as the engine does: index nj*denNi + dni, with nj = hj*Mj + mj.
 #         Hint: zi[t].reshape(Hj, denNi) and zj[t].reshape(Hj, Mj) broadcast to (Hj, Mj, denNi); flatten.
+    zji[t] = (zi[t].reshape(Hj, 1, denNi) * zj[t].reshape(Hj, Mj, 1)).reshape(-1)
 
-drives = {'Pi': zi, 'Pj': zj}  
+drives = {'Pi': zi, 'Pj': zj, 'Pji': zji}  
 rec = {'Pi': pi, 'Pj': pj, 'Pji': pji} 
             
 dev = m.memristor_info_dict['ideal']
@@ -52,26 +54,40 @@ print('device thresholds v_off %.3f v_on %.3f' % (dev['v_off'], dev['v_on']))
 #         in voltage_generation_bcpnn): all cells start at 0 and the FIRST drive is applied once before step 0.
 #         Keep x_pi, x_pj, x_pji as (1, N) tensors fed back each step; record the max |mem - recorded| per step.
 t0 = time.time()
-for name in ('Pi', 'Pj'):
+for name in ('Pi', 'Pj', 'Pji'):
     x = torch.zeros(1, drives[name].shape[1], dtype=torch.float32)
     out_1 = []
     out_2 = []
-    for t in range(T):    
-        m.mapping_write_bcpnn(drive=torch.from_numpy(drives[name][t].reshape(1,-1)), x_current=x, trace=name)
-        x = m.mapping_read_bcpnn(name).reshape(1,-1)
-        out_1.append(np.abs(x[0].numpy() - rec[name][t]).max())
-        out_2.append(np.abs(x[0].numpy() - rec[name][t]).mean())
+    if name != 'Pji':
+        for t in range(T):    
+            m.mapping_write_bcpnn(drive=torch.from_numpy(drives[name][t].reshape(1,-1)), x_current=x, trace=name)
+            x = m.mapping_read_bcpnn(name).reshape(1,-1)
+            out_1.append(np.abs(x[0].numpy() - rec[name][t]).max())
+            out_2.append(np.abs(x[0].numpy() - rec[name][t]).mean())
+        
+        
+    else:
+       for t in range(T):
+           m.mapping_write_bcpnn(drive=torch.from_numpy(drives[name][t].reshape(1,-1)), x_current=x, trace=name)
+           x = m.mapping_read_bcpnn(name).reshape(1,-1)
+           out_1.append(np.abs(x[0].numpy()[pji_index] - rec['Pji'][t]).max())
+           out_2.append(np.abs(x[0].numpy()[pji_index] - rec['Pji'][t]).mean())
+        
+        
+        
     out_1 = np.array(out_1)
-    out_2 = np.array(out_2)
-    
+    out_2 = np.array(out_2) 
     print("Pi median:", np.median(rec['Pi'][-1]))
     print("Pi max:", rec['Pi'][-1].max())
     print("Pj median:", np.median(rec['Pj'][-1]))
     print("Pj max:", rec['Pj'][-1].max())
-    
+    print("Pji median:", np.median(rec['Pji'][-1]))
+    print("Pji max:", rec['Pji'][-1].max())
     g=rec[name]
-    up = (drives[name][1:] > g[:-1]).mean()
-    
+    if name != 'Pji':
+        up = (drives[name][1:] > g[:-1]).mean()
+    else:
+        up = (drives[name][1:, pji_index] > g[:-1]).mean()
 # ---- 6. report: per array, max and mean absolute error over all cells and steps, and the same relative to
 #         the recorded maximum; for Pji compare only the recorded columns pji_index. Also print wall time. ----
     print(f'{name:4s} pair ({m.v_pair[name]}) | golden range {g.min():.2e}..{g.max():.2e} '

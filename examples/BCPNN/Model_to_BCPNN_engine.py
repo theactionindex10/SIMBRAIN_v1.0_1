@@ -39,7 +39,6 @@ parser.add_argument("--temperature", type=int, default=300) # Temperature will o
 parser.add_argument("--hardware_estimation", type=int, default=False)
 parser.add_argument("--memristor_inference", type=int, default=0)
 
-
 parser.add_argument("--seed", type=int, default=88192386)                 # engine RNG seed (Params.seed)
 parser.add_argument("--adc_range", type=float, default=0.2)               # ADC full scale for Pj and Pji as a fraction of Goff (Pi stays 1.0)
 parser.add_argument("--pulse_mode", type=str, default='gap')               # gap = VTEAM inverted per cell per step; pair = fixed (vpos, vneg) per band

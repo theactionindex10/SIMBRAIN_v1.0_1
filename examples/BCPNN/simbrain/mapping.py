@@ -447,6 +447,8 @@ class STDPMapping(Mapping):
 
        
 class BCPNNMapping(Mapping):
+    pulse_mode_default = 'pair'      # 'pair' = fixed (vpos, vneg) per band; 'gap' = voltage computed per cell per step
+    adc_full_scale_default = {'Pi': 1.0, 'Pj': 0.2, 'Pji': 0.2}   # ADC full scale per trace as a fraction of Goff (high_cut_ratio)
     # language=rst
     """
     Mapping BCPNN to memristor arrays.
@@ -533,11 +535,15 @@ class BCPNNMapping(Mapping):
             mem_array.mem_wr_t = self.mem_wr_t.clone()
             
         self.last_read = {}
+        self.pulse_mode = BCPNNMapping.pulse_mode_default
+        self.adc_full_scale = dict(BCPNNMapping.adc_full_scale_default)
+        self.taupdt = 0.001
 
         
         
         
     def voltage_generation_bcpnn(self, trace_file, taupdt=0.001, plot=False) -> None:
+        self.taupdt = taupdt
         # language=rst
         """
         Calibrates one (v_pos, v_neg) pair per trace and stores them in ``self.v_pair`` by name.
@@ -666,15 +672,6 @@ class BCPNNMapping(Mapping):
         np.savez(cache_file, v_pair=np.array(self.v_pair, dtype=object),
                  **{'group_' + name: self.group[name].numpy() for name in self.v_pair})
 
-    def to(self, *args, **kwargs):
-        super().to(*args, **kwargs)
-        dev = self.mem_v.device
-        for d in ('vpos_cell', 'vneg_cell', 'group'):
-            if hasattr(self, d):
-                setattr(self, d, {k: v.to(dev) for k, v in getattr(self, d).items()})
-        self.last_read = {}
-        return self
-
     def _set_cell_voltages(self):
         self.vpos_cell, self.vneg_cell = {}, {}
         for name in self.v_pair:
@@ -789,8 +786,12 @@ class BCPNNMapping(Mapping):
         
         # nn to mem
         mem_up = self.s > x_cur
-        self.mem_v = torch.where(mem_up, self.vpos_cell[trace], self.vneg_cell[trace])
-        v_amp = [float(self.vpos_cell[trace].max()), float(self.vneg_cell[trace].min())]
+        if self.pulse_mode == 'gap':
+            self.mem_v = self._gap_voltage(self.s, x_cur)
+            v_amp = [float(self.mem_v.max()), float(self.mem_v.min())]
+        else:
+            self.mem_v = torch.where(mem_up, self.vpos_cell[trace], self.vneg_cell[trace])
+            v_amp = [float(self.vpos_cell[trace].max()), float(self.vneg_cell[trace].min())]
 
         self.DAC_module.DAC_write(mem_v=self.mem_v, mem_v_amp=v_amp)
 
@@ -804,6 +805,22 @@ class BCPNNMapping(Mapping):
         
         return self.x
         
+    def _gap_voltage(self, drive, x_read):
+        d = self.memristor_info_dict[self.device_name]
+        dtdr = d['delta_t'] * d['duty_ratio']
+        x = torch.clamp(x_read, 0.0, 1.0)
+        step = (drive - x_read) * self.taupdt
+        v = torch.zeros_like(step)
+        up = step > 0
+        pos = step / (dtdr * d['k_off'] * torch.clamp(1.0 - x, min=1e-12) ** d['P_off'])
+        v = torch.where(up, d['v_off'] * (1.0 + pos.clamp(min=0) ** (1.0 / d['alpha_off'])), v)
+        dn = (step < 0) & (x > 0)
+        neg = (-step) / (dtdr * abs(d['k_on']) * torch.clamp(x, min=1e-12) ** d['P_on'])
+        v = torch.where(dn, d['v_on'] * (1.0 + neg.clamp(min=0) ** (1.0 / d['alpha_on'])), v)
+        v = torch.where(v > 0, v.clamp(max=1.5 * d['v_off']), v)
+        v = torch.where(v < 0, v.clamp(min=1.5 * d['v_on']), v)
+        return v
+
     def mapping_read_bcpnn(self, trace):
         # language=rst
         """
@@ -820,7 +837,7 @@ class BCPNNMapping(Mapping):
 
         mem_i, _ = self.mem_arrays[trace].memristor_read(mem_v=self.mem_v_read, read_time=1)
         ADC_mem_c = 1 / (1 / self.Goff + self.mem_arrays[trace].total_wire_resistance)
-        mem_i = self.ADC_module.ADC_read(mem_i_sequence=mem_i, mem_c=ADC_mem_c, high_cut_ratio=1)
+        mem_i = self.ADC_module.ADC_read(mem_i_sequence=mem_i, mem_c=ADC_mem_c, high_cut_ratio=self.adc_full_scale.get(trace, 1.0))
 
         if 'clipping' in self.sim_params.keys():
             mem_i = self.clipping.clipping_function(mem_i_origin=mem_i)
