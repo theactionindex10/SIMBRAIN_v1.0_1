@@ -1,0 +1,33 @@
+/usr/local/lib/python3.10/dist-packages/matplotlib/projections/__init__.py:63: UserWarning: Unable to import Axes3D. This may be due to multiple versions of Matplotlib being installed (e.g. as a system package and as a pip package). As a result, the 3D projection is not available.
+  warnings.warn("Unable to import Axes3D. This may be due to multiple versions of "
+
+BCPNNSim MNIST
+architecture : 784x2 -> 30x100 -> 1x10
+train        : 1000
+test         : 1000
+memristor arrays on cuda
+
+Training
+
+Unsupervised
+  epoch 1/5 | simstep   3000 | swapped  1585
+  epoch 2/5 | simstep   6000 | swapped  2462
+  epoch 3/5 | simstep   9000 | swapped  3190
+  epoch 4/5 | simstep  12000 | swapped  3811
+  epoch 5/5 | simstep  15000 | swapped  4303
+
+Supervised
+  epoch 1/5 | simstep  18000
+  epoch 2/5 | simstep  21000
+  epoch 3/5 | simstep  24000
+  epoch 4/5 | simstep  27000
+  epoch 5/5 | simstep  30000
+saved figures to: figures
+
+Results
+train accuracy : 78.60%
+test accuracy  : 66.00%
+
+Fin.
+309.64user 8.40system 5:21.79elapsed 98%CPU (0avgtext+0avgdata 1499496maxresident)k
+1052856inputs+688outputs (3756major+404329minor)pagefaults 0swaps

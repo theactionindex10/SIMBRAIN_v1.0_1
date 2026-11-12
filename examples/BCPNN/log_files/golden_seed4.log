@@ -1,0 +1,54 @@
+/usr/local/lib/python3.10/dist-packages/matplotlib/projections/__init__.py:63: UserWarning: Unable to import Axes3D. This may be due to multiple versions of Matplotlib being installed (e.g. as a system package and as a pip package). As a result, the 3D projection is not available.
+  warnings.warn("Unable to import Axes3D. This may be due to multiple versions of "
+
+BCPNNSim MNIST
+architecture : 784x2 -> 30x100 -> 1x10
+train        : 1000
+test         : 1000
+seed         : 4
+
+Training
+
+Unsupervised
+  epoch 1/5 | simstep   3000 | swapped  1054
+  epoch 2/5 | simstep   6000 | swapped  2751
+  epoch 3/5 | simstep   9000 | swapped  4210
+  epoch 4/5 | simstep  12000 | swapped  5293
+  epoch 5/5 | simstep  15000 | swapped  5935
+
+Supervised
+  epoch 1/5 | simstep  18000
+  epoch 2/5 | simstep  21000
+  epoch 3/5 | simstep  24000
+  epoch 4/5 | simstep  27000
+  epoch 5/5 | simstep  30000
+saved figures to: figures
+
+Results
+train accuracy : 99.50%
+test accuracy  : 89.30%
+
+Fin.
+	Command being timed: "python3 -u Model_to_BCPNN_engine.py --memristor_inference 0 --seed 4"
+	User time (seconds): 48.43
+	System time (seconds): 5.71
+	Percent of CPU this job got: 109%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:49.43
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 1122240
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 3752
+	Minor (reclaiming a frame) page faults: 272967
+	Voluntary context switches: 1305
+	Involuntary context switches: 340
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 176
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
