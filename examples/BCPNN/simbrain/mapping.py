@@ -536,6 +536,7 @@ class BCPNNMapping(Mapping):
             
         self.last_read = {}
         self.pulse_mode = BCPNNMapping.pulse_mode_default
+        self.dac_bits = 0                                     # DAC bits for the gap voltage (0 = continuous)
         self.adc_full_scale = dict(BCPNNMapping.adc_full_scale_default)
         self.taupdt = 0.001
 
@@ -819,6 +820,10 @@ class BCPNNMapping(Mapping):
         v = torch.where(dn, d['v_on'] * (1.0 + neg.clamp(min=0) ** (1.0 / d['alpha_on'])), v)
         v = torch.where(v > 0, v.clamp(max=1.5 * d['v_off']), v)
         v = torch.where(v < 0, v.clamp(min=1.5 * d['v_on']), v)
+        if self.dac_bits > 0:                                # DAC grid: 2^N levels over 0..1.5*|v_th| per polarity
+            vmax = torch.where(v > 0, torch.full_like(v, 1.5 * d['v_off']), torch.full_like(v, -1.5 * d['v_on']))
+            lsb = vmax / (2 ** self.dac_bits - 1)
+            v = torch.where(v != 0, torch.sign(v) * torch.round(v.abs() / lsb) * lsb, v)
         return v
 
     def mapping_read_bcpnn(self, trace):
