@@ -3,10 +3,33 @@ import argparse
 from dataclasses import dataclass
 import numpy as np
 import sys, os, json
-_engine_dirs = [os.path.expanduser(d) for d in ('~/PhD_Work/BCPNNSim2.1_memristor/python_api', '~/BCPNNSim2.1_memristor/python_api')]   # local WSL / cheddar
-sys.path.insert(0, next(d for d in _engine_dirs if os.path.isdir(d)))   # the COPY of the engine with memristor traces
+
+# ---- Locate the BCPNNSim build that contains the memristor traces (Prj::set_memristor) ----
+# Order: 1) environment variable BCPNN_MEMRISTOR_ENGINE (the engine repo or its python_api folder),
+#        2) a folder named BCPNNSim2.1_memristor next to this SIMBRAIN checkout.
+_repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_candidates = []
+if os.environ.get('BCPNN_MEMRISTOR_ENGINE'):
+    _candidates.append(os.path.expanduser(os.environ['BCPNN_MEMRISTOR_ENGINE']))
+_candidates.append(os.path.join(os.path.dirname(_repo_root), 'BCPNNSim2.1_memristor'))
+_engine_dir = None
+for _c in _candidates:
+    for _d in (_c, os.path.join(_c, 'python_api')):
+        if os.path.isdir(_d) and any(f.startswith('BcpnnSim') and f.endswith('.so') for f in os.listdir(_d)):
+            _engine_dir = _d
+            break
+    if _engine_dir:
+        break
+if _engine_dir is None:
+    sys.exit("Could not find a built BCPNNSim with memristor traces. Looked in:\n  " + "\n  ".join(_candidates) +
+             "\nClone the memristor branch of BCPNNSim2.1, build it (python_api: make -f Makefile.cuda or Makefile.cpu),"
+             "\nthen set BCPNN_MEMRISTOR_ENGINE=/path/to/that/repo, or place it next to this SIMBRAIN checkout.")
+sys.path.insert(0, _engine_dir)
+
 import BcpnnSim as sim
-assert 'BCPNNSim2.1_memristor' in sim.__file__, sim.__file__
+if not hasattr(sim.Prj, 'set_memristor'):
+    sys.exit(f"{sim.__file__} is a BCPNNSim build without memristor traces (no Prj.set_memristor). "
+             "Point BCPNN_MEMRISTOR_ENGINE at the memristor build.")
 from plot import plot_receptive_fields, plot_filters
 from preprocess import MNISTDataset
 
@@ -194,7 +217,7 @@ class BCPNNMNISTModel:
         engine copy, which then pulses/reads the P traces inside Prj::updtraces. Replaces the Python hook."""
         c = np.load('notes/ihprj_golden_traces_calib.npz', allow_pickle=True)
         v_pair = c['v_pair'].item()
-        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # SIMBRAIN repo root (works locally and on cheddar)
+        root = _repo_root                                     # SIMBRAIN repo root (device and wire JSON files)
         d = json.load(open(root + '/memristor_device_info.json'))[args.memristor_device]
         w = json.load(open(root + '/wire_tech_info.json'))[str(args.wire_width)]
         mem_size = d['mem_size'] * 1e-9
